@@ -1,0 +1,7 @@
+<library path="lib/libphri_fob">
+  <class name="phri_fob/FOB_controller" type="phri_fob::FOB_controller" base_class_type="controller_interface::ControllerBase">
+    <description>
+      FOB 
+    </description>
+  </class>
+</library>
