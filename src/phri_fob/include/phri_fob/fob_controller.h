@@ -16,6 +16,9 @@
 #include <ros/time.h>
 #include <Eigen/Dense>
 
+
+#include <std_msgs/Float32MultiArray.h>
+
 #include <phri_fob/compliance_paramConfig.h>
 #include <franka_hw/franka_model_interface.h>
 #include <franka_hw/franka_state_interface.h>
@@ -38,6 +41,8 @@ namespace phri_fob
         Eigen::Matrix<double, 7, 1> KD;
 
     private:
+        ros::Publisher desiredTrajPub;
+
         Eigen::Matrix<double, 7, 1> motors_inertia;
         double alpha = 0.95;
         Eigen::Matrix<double, 7, 1> q_initial;

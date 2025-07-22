@@ -21,6 +21,9 @@ namespace phri_fob
     std::vector<double> cartesian_stiffness_vector;
     std::vector<double> cartesian_damping_vector;
 
+
+    desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
+
     // sub_equilibrium_pose_ = node_handle.subscribe(
     //     "equilibrium_pose", 20, &FOB_controller::equilibriumPoseCallback, this,
     //     ros::TransportHints().reliable().tcpNoDelay());
@@ -191,6 +194,16 @@ namespace phri_fob
     auto ref_offset = std::sin(time_in_sec)/(2.0 * M_PI); 
     Eigen::Matrix<double, 7, 1> q_ref = q_initial.array() + ref_offset;
 
+    std_msgs::Float32MultiArray msg;
+    msg.data.resize(7);
+
+    for (size_t i = 0; i < 7; ++i)
+    {
+      msg.data[i] = q_ref[i];
+    }
+
+    desiredTrajPub.publish(msg);
+
     // get state variables
     franka::RobotState robot_state = state_handle_->getRobotState();
     // std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
@@ -219,7 +232,7 @@ namespace phri_fob
     std::cout <<  observed_torque << std::endl;
     
     for (size_t i = 0; i < 7; ++i) {
-      joint_handles_[i].setCommand(joints_command(i) - (observed_torque(i) - joints_command(i)) * 1);
+      joint_handles_[i].setCommand(joints_command(i)); //   
       // joint_handles_[i].setCommand(0.0);
     }
 

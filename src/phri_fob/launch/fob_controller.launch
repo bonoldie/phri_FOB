@@ -2,6 +2,11 @@
 <launch>
   <arg name="robot_ip" default="192.168.1.2" />
   <arg name="load_gripper" default="false" />
+
+  <arg name="rate" default="1000"/>
+  <arg name="ns" default="/mesa_left"/>
+  <arg name="controller" default=""/>
+
   <include file="$(find franka_control)/launch/franka_control.launch" >
     <arg name="robot_ip" value="$(arg robot_ip)" />
     <arg name="load_gripper" value="$(arg load_gripper)" />
@@ -14,4 +19,16 @@
     <remap from="equilibrium_pose" to="/cartesian_impedance_example_controller/equilibrium_pose" />
   </node> -->
   <!-- <node name="rqt_reconfigure" pkg="rqt_reconfigure" type="rqt_reconfigure" required="false" /> -->
+
+  <!-- <node name="state_controller_spawner" pkg="controller_manager" type="spawner" respawn="false" output="screen" args="franka_state_controller"/> -->
+  <!-- <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+    <param name="tf_prefix" value="$(arg ns)"/>
+    <param name="publish_frequency" value="$(arg rate)"/>
+  </node>
+  <node name="joint_state_publisher" type="joint_state_publisher" pkg="joint_state_publisher" output="screen">
+    <rosparam if="$(arg load_gripper)" param="source_list">[franka_state_controller/joint_states, franka_gripper/joint_states] </rosparam>
+    <rosparam unless="$(arg load_gripper)" param="source_list">[franka_state_controller/joint_states] </rosparam>
+    <param name="rate" value="$(arg rate)"/>
+  </node>
+  <param name="robot_description" command="$(find xacro)/xacro - -inorder '$(find franka_description)/robots/panda_arm.urdf.xacro'" /> -->
 </launch>
