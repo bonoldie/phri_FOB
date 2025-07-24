@@ -1,0 +1,3 @@
+[submodule "FrankaEmikaPandaDynModel"]
+	path = FrankaEmikaPandaDynModel
+	url = https://github.com/bonoldie/FrankaEmikaPandaDynModel.git

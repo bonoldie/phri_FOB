@@ -158,7 +158,17 @@ namespace phri_fob
     KP(4) = 15.0;
     KP(2) = 15.0;
 
-    motors_inertia.setConstant(0.01);
+    // 3–6 × 10⁻⁶ kg·m² for the smallest motors
+    // 5–10 × 10⁻⁵ kg·m² for the largest motors
+    motor_inertias << 
+        7.5e-5,  // J1 (87 Nm)
+        7.5e-5,  // J2 (87 Nm)
+        7.5e-5,  // J3 (87 Nm)
+        7.5e-5,  // J4 (87 Nm)
+        4.5e-6,  // J5 (12 Nm)
+        4.5e-6,  // J6 (12 Nm)
+        4.5e-6;  // J7 (12 Nm)
+    
 
     // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
     // to initial configuration
@@ -204,16 +214,17 @@ namespace phri_fob
 
     desiredTrajPub.publish(msg);
 
-    // get state variables
+    // get state variables and gravity vector
     franka::RobotState robot_state = state_handle_->getRobotState();
-    // std::array<double, 7> coriolis_array = model_handle_->getCoriolis();
-    // std::array<double, 42> jacobian_array =
-    //     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+    std::array<double, 7> gravity_array = model_handle_->getGravity();
 
     Eigen::Map<Eigen::Matrix<double, 7, 1>> joints_effort(robot_state.tau_J.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> joints_dq(robot_state.dq.data());
-    Eigen::Matrix<double, 7, 1> joints_ddq = joints_dq - prev_joints_dq;
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> joints_dq(robot_state.dq.data());
+    Eigen::Matrix<double, 7, 1> joints_ddq = (joints_dq - prev_joints_dq) / 0.001f;
     joints_ddq = alpha * joints_ddq + (1 - alpha) * prev_joints_ddq;
+
+    auto torque_without_g = joints_effort - gravity_array
 
     auto observed_torque = joints_ddq.cwiseProduct(motors_inertia); 
 
@@ -229,10 +240,10 @@ namespace phri_fob
     auto joints_command = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);
 
     printf("\33[H\33[2J");
-    std::cout <<  observed_torque << std::endl;
+    std::cout <<  torque_without_g << std::endl;
     
     for (size_t i = 0; i < 7; ++i) {
-      joint_handles_[i].setCommand(joints_command(i)); //   
+      joint_handles_[i].setCommand(0);//joints_command(i)); //   
       // joint_handles_[i].setCommand(0.0);
     }
 
