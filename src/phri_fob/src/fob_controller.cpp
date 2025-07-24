@@ -160,7 +160,7 @@ namespace phri_fob
 
     // 3–6 × 10⁻⁶ kg·m² for the smallest motors
     // 5–10 × 10⁻⁵ kg·m² for the largest motors
-    motor_inertias << 
+    motors_inertia << 
         7.5e-5,  // J1 (87 Nm)
         7.5e-5,  // J2 (87 Nm)
         7.5e-5,  // J3 (87 Nm)
@@ -175,6 +175,8 @@ namespace phri_fob
     auto initial_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> prev_joints_dq(initial_state.dq.data());
+  
+    prev_torque_frc_estimated.setZero();
     prev_joints_ddq.setZero();
 
     // get jacobian
@@ -216,38 +218,43 @@ namespace phri_fob
 
     // get state variables and gravity vector
     franka::RobotState robot_state = state_handle_->getRobotState();
-    std::array<double, 7> gravity_array = model_handle_->getGravity();
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity_vec(model_handle_->getGravity().data());
 
     Eigen::Map<Eigen::Matrix<double, 7, 1>> joints_effort(robot_state.tau_J.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> joints_dq(robot_state.dq.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> joints_dq(robot_state.dq.data());
     Eigen::Matrix<double, 7, 1> joints_ddq = (joints_dq - prev_joints_dq) / 0.001f;
     joints_ddq = alpha * joints_ddq + (1 - alpha) * prev_joints_ddq;
 
-    auto torque_without_g = joints_effort - gravity_array
+    auto torque_without_g = joints_effort - gravity_vec;
 
-    auto observed_torque = joints_ddq.cwiseProduct(motors_inertia); 
-
+    auto effective_torque = joints_ddq.cwiseProduct(motors_inertia); 
+    
     // // convert to Eigen
     // Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
     // Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+
+
+    // Position PD outputs torque commands
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-
+    
     Eigen::Matrix<double, 7, 1> q_error = q_ref - q;
     Eigen::Matrix<double, 7, 1> dq_error =  - dq; 
 
-    auto joints_command = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);
-
-    printf("\33[H\33[2J");
-    std::cout <<  torque_without_g << std::endl;
+    // tau_m
+    auto torque_command = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);  
     
+    auto torque_frc_estimated = alpha * (effective_torque - torque_command) + (1 - alpha) * prev_torque_frc_estimated; 
+    
+    printf("\33[H\33[2J");
+    std::cout <<  (torque_command - torque_frc_estimated) << std::endl;
+
     for (size_t i = 0; i < 7; ++i) {
-      joint_handles_[i].setCommand(0);//joints_command(i)); //   
+      joint_handles_[i].setCommand(torque_command(i) - (torque_frc_estimated(i) * 6));//torque_command(i)); //   
       // joint_handles_[i].setCommand(0.0);
     }
 
-
+    prev_torque_frc_estimated = torque_frc_estimated;
     prev_joints_dq = joints_dq;
     prev_joints_ddq = joints_ddq;
 

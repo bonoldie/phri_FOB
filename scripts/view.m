@@ -5,7 +5,7 @@ clc;
 DoF = 7;
 joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutput', false);
 
-bag = rosbagreader('bags/PD_tracking.bag');
+bag = rosbagreader('bags/FOB_PD_tracking.bag');
 
 % Get list of topics in the bag
 topics = bag.AvailableTopics.Properties.RowNames;

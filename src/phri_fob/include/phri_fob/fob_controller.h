@@ -40,12 +40,15 @@ namespace phri_fob
         Eigen::Matrix<double, 7, 1> KP;
         Eigen::Matrix<double, 7, 1> KD;
 
+        Eigen::Matrix<double, 7, 1> motors_inertia;
+
     private:
         ros::Publisher desiredTrajPub;
 
-        Eigen::Matrix<double, 7, 1> motors_inertia;
         double alpha = 0.95;
         Eigen::Matrix<double, 7, 1> q_initial;
+
+        Eigen::Matrix<double, 7, 1> prev_torque_frc_estimated;
 
         Eigen::Matrix<double, 7, 1> prev_joints_dq;
         Eigen::Matrix<double, 7, 1> prev_joints_ddq;
