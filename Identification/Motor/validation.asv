@@ -1,0 +1,88 @@
+
+
+load 'Validation/sweep200-7s.mat'
+
+theta_m = [];
+dtheta_m = [];
+ddtheta_m = [];
+theta_e = [];
+dtheta_e = [];
+current = [];
+
+
+current = [ActiveCurrentA];
+theta_m = [Position];
+dtheta_m = [Velocity];
+ddtheta_m = [0; (diff(Velocity) ./ diff(Timesec))];
+
+
+% theta_e = AuxiliaryPosition;
+% dtheta_e = AuxiliaryVelocity;
+% ddtheta_e = diff(AuxiliaryVelocity) ./ diff(Timesec);
+
+
+y = current;
+dtheta_m_pos = dtheta_m;
+dtheta_m_neg = dtheta_m;
+sign_dtheta_m_pos = dtheta_m;
+sign_dtheta_m_neg = dtheta_m;
+
+for i=1:length(dtheta_m)
+    if(dtheta_m(i)>=0)
+        dtheta_m_neg(i) = 0;
+        sign_dtheta_m_neg(i) = 0;
+        sign_dtheta_m_pos(i) = 1;
+        
+    else
+        dtheta_m_pos(i) = 0;
+        sign_dtheta_m_pos(i) = 0;
+        sign_dtheta_m_neg(i) = -1;
+    end
+end
+
+
+
+% Validazione
+
+
+
+% minimi quadrati
+%phi = [ddtheta_m dtheta_m];%.23
+%phi = [ddtheta_m sign(dtheta_m)];%.27
+%phi = [ddtheta_m dtheta_m sign(dtheta_m)];%.225
+%phi = [ddtheta_m dtheta_m_pos dtheta_m_neg sign(dtheta_m)];%.225
+phi = [ddtheta_m dtheta_m_pos dtheta_m_neg sign_dtheta_m_pos sign_dtheta_m_neg];%.225
+
+% Modello che approssima i dati sperimentali
+y_mod = phi * lambda;
+
+% Errore fra modello ed esperimento
+y_delta = y - y_mod;
+
+% Calcolo della deviazione standard dell'errore
+sigma = sqrt(var(y_delta))
+
+
+figure(2)
+hold on
+% Esperimento
+plot(y)
+% Modello (verde)
+plot(y_mod,'g')
+% Errore (rosso)
+plot(y_delta,'r')
+hold off
+
+
+
+% 
+% lambda(1)
+% lambda(2)
+% lambda(3)
+% lambda(4)
+% lambda(5)
+% 
+
+
+
+

@@ -1,0 +1,23 @@
+
+function [dtheta_m_pos dtheta_m_neg sign_dtheta_m_pos sign_dtheta_m_neg] = frictionModes(dtheta_m)
+
+dtheta_m_pos = dtheta_m;
+dtheta_m_neg = dtheta_m;
+sign_dtheta_m_pos = dtheta_m;
+sign_dtheta_m_neg = dtheta_m;
+
+for i=1:length(dtheta_m)
+    if(abs(dtheta_m(i))<eps)
+        dtheta_m_neg(i) = 0;
+        sign_dtheta_m_neg(i) = 0;
+        sign_dtheta_m_pos(i) = 0;
+    if(dtheta_m(i)>=0)
+        dtheta_m_neg(i) = 0;
+        sign_dtheta_m_neg(i) = 0;
+        sign_dtheta_m_pos(i) = 1;
+    else
+        dtheta_m_pos(i) = 0;
+        sign_dtheta_m_pos(i) = 0;
+        sign_dtheta_m_neg(i) = -1;
+    end
+end

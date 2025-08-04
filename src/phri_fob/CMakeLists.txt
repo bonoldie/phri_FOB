@@ -133,6 +133,7 @@ include_directories(
 ## Declare a C++ library
 add_library(phri_fob
   src/fob_controller.cpp
+  src/identification_controller.cpp
 )
 
 file(GLOB_RECURSE Boost_includes deps/boost/libs/*/include)

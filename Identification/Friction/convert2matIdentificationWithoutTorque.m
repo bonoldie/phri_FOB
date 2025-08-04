@@ -1,0 +1,70 @@
+% rimuovere a mano D-0.14 e D05 D-05 CN-011
+
+clear
+close all
+matpath = 'Data\'
+%filepath = '../../../SeaControl/';
+filepath = 'Csv\';
+
+files = dir([filepath 'current*.csv']);
+filelist = files;
+
+N = 6;%time + 5 var
+%N = 7;%time + 6 var
+
+start = 15000;
+for i=1:length(filelist)
+filelist(i).name
+fid = fopen([filepath filelist(i).name]); 
+DATA = textscan(fid,'%f %f %f %f %f %f %f %f %f');
+
+D = cell2struct(DATA(1,1),'A',1);
+TimeSec =  D.A(start:end);
+
+D = cell2struct(DATA(1,2),'A',1);
+ActiveCurrentA =  D.A(start:end);
+
+D = cell2struct(DATA(1,3),'A',1);
+CurrentCommand =  D.A(start:end);
+
+D = cell2struct(DATA(1,4),'A',1);
+Position =  D.A(start:end);
+
+D = cell2struct(DATA(1,5),'A',1);
+Velocity =  D.A(start:end);
+
+D = cell2struct(DATA(1,6),'A',1);
+pVelocity =  D.A(start:end);
+
+D = cell2struct(DATA(1,7),'A',1);
+AuxiliaryPosition =  D.A(start:end);
+
+D = cell2struct(DATA(1,8),'A',1);
+AuxiliaryVelocity =  D.A(start:end);
+
+D = cell2struct(DATA(1,9),'A',1);
+pAuxiliaryVelocity =  D.A(start:end);
+
+
+figure(1)
+subplot(N,1,1)
+plot(TimeSec,ActiveCurrentA)
+subplot(N,1,2)
+plot(TimeSec,CurrentCommand)
+subplot(N,1,3)
+plot(TimeSec,Position)
+subplot(N,1,4)
+plot(TimeSec,Velocity,TimeSec,pVelocity)
+subplot(N,1,5)
+plot(TimeSec,AuxiliaryPosition)
+subplot(N,1,6)
+plot(TimeSec,AuxiliaryVelocity,TimeSec,pAuxiliaryVelocity)
+
+% pause
+eval(['save ' matpath '' strrep(filelist(i).name,'csv','mat') ' ActiveCurrentA CurrentCommand Position Velocity pVelocity AuxiliaryPosition AuxiliaryVelocity pAuxiliaryVelocity TimeSec']);
+
+fclose(fid);
+end
+
+
+

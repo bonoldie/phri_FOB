@@ -44,6 +44,8 @@ namespace phri_fob
 
     private:
         ros::Publisher desiredTrajPub;
+        ros::Publisher torqueWOGravity;
+        ros::Publisher tauFrcHat;
 
         double alpha = 0.95;
         Eigen::Matrix<double, 7, 1> q_initial;

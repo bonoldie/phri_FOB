@@ -21,8 +21,9 @@ namespace phri_fob
     std::vector<double> cartesian_stiffness_vector;
     std::vector<double> cartesian_damping_vector;
 
-
     desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
+    torqueWOGravity = node_handle.advertise<std_msgs::Float32MultiArray>("torque_wo_gravity", 1);
+    tauFrcHat = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
 
     // sub_equilibrium_pose_ = node_handle.subscribe(
     //     "equilibrium_pose", 20, &FOB_controller::equilibriumPoseCallback, this,
@@ -144,38 +145,39 @@ namespace phri_fob
   void FOB_controller::starting(const ros::Time & /*time*/)
   {
     KP.setZero();
-    KP(6) = 2500.0;
+    KP(6) = 30.0;
     // KP(5) = 2500.0;
-    KP(4) = 2500.0; 
-    KP(2) = 2500.0; 
+    KP(4) = 30.0;
+    KP(2) = 30.0;
 
     // KP(5) = 10.0;
     // KP(4) = 10.0;
 
     KD.setZero();
-    KP(6) = 15.0;
+    KD(6) = 2.0;
     // KP(5) = 15.0;
-    KP(4) = 15.0;
-    KP(2) = 15.0;
+    KD(4) = 2.0;
+    KD(2) = 2.0;
 
     // 3–6 × 10⁻⁶ kg·m² for the smallest motors
     // 5–10 × 10⁻⁵ kg·m² for the largest motors
-    motors_inertia << 
-        7.5e-5,  // J1 (87 Nm)
-        7.5e-5,  // J2 (87 Nm)
-        7.5e-5,  // J3 (87 Nm)
-        7.5e-5,  // J4 (87 Nm)
-        4.5e-6,  // J5 (12 Nm)
-        4.5e-6,  // J6 (12 Nm)
-        4.5e-6;  // J7 (12 Nm)
+    motors_inertia << 7.5e-5, // J1 (87 Nm)
+        7.5e-5,               // J2 (87 Nm)
+        7.5e-5,               // J3 (87 Nm)
+        7.5e-5,               // J4 (87 Nm)
+        4.5e-6,               // J5 (12 Nm)
+        4.5e-6,               // J6 (12 Nm)
+        4.5e-6;               // J7 (12 Nm)
+
     
+    motors_inertia =  motors_inertia.array();
 
     // compute initial velocity with jacobian and set x_attractor and q_d_nullspace
     // to initial configuration
     auto initial_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> prev_joints_dq(initial_state.dq.data());
-  
+
     prev_torque_frc_estimated.setZero();
     prev_joints_ddq.setZero();
 
@@ -196,25 +198,22 @@ namespace phri_fob
     // q_d_nullspace_ = q_initial;
   }
 
-
   void FOB_controller::update(const ros::Time &time,
                               const ros::Duration & /*period*/)
   {
+
+    double freq = 8;
+    double scale_factor = 1/ (2.0 * M_PI);
+
     // Joints trajectory setup
-    uint64_t nsec_now =  time.now().toNSec();
+    uint64_t nsec_now = time.now().toNSec();
     auto time_in_sec = static_cast<double>(nsec_now) * 1e-9;
-    auto ref_offset = std::sin(time_in_sec)/(2.0 * M_PI); 
+    auto ref_offset = std::sin(time_in_sec * freq) * scale_factor;
     Eigen::Matrix<double, 7, 1> q_ref = q_initial.array() + ref_offset;
-
-    std_msgs::Float32MultiArray msg;
-    msg.data.resize(7);
-
-    for (size_t i = 0; i < 7; ++i)
-    {
-      msg.data[i] = q_ref[i];
-    }
-
-    desiredTrajPub.publish(msg);
+    
+    Eigen::Matrix<double, 7, 1> dq_ref;
+    dq_ref.setZero();
+    dq_ref = dq_ref.array() + freq * std::cos(time_in_sec * freq) * scale_factor;
 
     // get state variables and gravity vector
     franka::RobotState robot_state = state_handle_->getRobotState();
@@ -227,32 +226,57 @@ namespace phri_fob
 
     auto torque_without_g = joints_effort - gravity_vec;
 
-    auto effective_torque = joints_ddq.cwiseProduct(motors_inertia); 
-    
+    auto effective_torque = joints_ddq.cwiseProduct(motors_inertia);
+
     // // convert to Eigen
     // Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
     // Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
 
-
     // Position PD outputs torque commands
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-    
+
     Eigen::Matrix<double, 7, 1> q_error = q_ref - q;
-    Eigen::Matrix<double, 7, 1> dq_error =  - dq; 
+    Eigen::Matrix<double, 7, 1> dq_error = dq_ref - dq;
 
     // tau_m
-    auto torque_command = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);  
-    
-    auto torque_frc_estimated = alpha * (effective_torque - torque_command) + (1 - alpha) * prev_torque_frc_estimated; 
-    
-    printf("\33[H\33[2J");
-    std::cout <<  (torque_command - torque_frc_estimated) << std::endl;
+    auto torque_command = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);
 
-    for (size_t i = 0; i < 7; ++i) {
-      joint_handles_[i].setCommand(torque_command(i) - (torque_frc_estimated(i) * 6));//torque_command(i)); //   
+    auto torque_frc_estimated = alpha * (effective_torque - torque_command) + (1 - alpha) * prev_torque_frc_estimated;
+
+    // printf("\33[H\33[2J");
+    // std::cout << (torque_command - torque_frc_estimated) << std::endl;
+
+    for (size_t i = 0; i < 7; ++i)
+    {
+      joint_handles_[i].setCommand(torque_command(i) - (torque_frc_estimated(i))); // torque_command(i)); //
       // joint_handles_[i].setCommand(0.0);
     }
+
+    //  Publish stuff
+    std_msgs::Float32MultiArray msg;
+    msg.data.resize(7);
+
+    for (size_t i = 0; i < 7; ++i)
+    {
+      msg.data[i] = q_ref[i];
+    }
+
+    desiredTrajPub.publish(msg);
+
+    for (size_t i = 0; i < 7; ++i)
+    {
+      msg.data[i] = torque_frc_estimated[i];
+    }
+
+    tauFrcHat.publish(msg);
+
+    for (size_t i = 0; i < 7; ++i)
+    {
+      msg.data[i] = torque_without_g[i];
+    }
+
+    torqueWOGravity.publish(msg);
 
     prev_torque_frc_estimated = torque_frc_estimated;
     prev_joints_dq = joints_dq;
@@ -319,8 +343,6 @@ namespace phri_fob
     // position_d_ = filter_params_ * position_d_target_ + (1.0 - filter_params_) * position_d_;
     // orientation_d_ = orientation_d_.slerp(filter_params_, orientation_d_target_);
   }
-
-  
 
   // Eigen::Matrix<double, 7, 1> FOB_controller::saturateTorqueRate(
   //     const Eigen::Matrix<double, 7, 1> &tau_d_calculated,
