@@ -5,7 +5,7 @@ clc;
 DoF = 7;
 joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutput', false);
 
-bag = rosbagreader('bags/2025-08-04-16-57-49.bag');
+bag = rosbagreader('bags/PD_only.bag');
 % bag = rosbagreader('bags/PD_tracking.bag');
 
 % Get list of topics in the bag
@@ -14,7 +14,7 @@ topics = bag.AvailableTopics.Properties.RowNames;
 % Initialize a structure to store timeseries
 timeseriesMap = containers.Map();
 
-topics_to_parse = {'/FOB_controller/tau_frc_ref', '/FOB_controller/torque_wo_gravity', '/FOB_controller/desired_trajectory', '/franka_state_controller/franka_states'};
+topics_to_parse = {'/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory', '/franka_state_controller/franka_states'};
 
 for i=1:size(topics_to_parse, 2)
     topic = topics_to_parse{i};
@@ -46,16 +46,12 @@ for i=1:size(topics_to_parse, 2)
     %timeseriesMap(topic) = ts;
 end
 
-plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/torque_wo_gravity/Data');timeseriesMap('/franka_state_controller/franka_states/TauJD')}, joint_names, {'TauJ'; 'TauJ_d'})
-
 
 plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/Q'); timeseriesMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
 
+% plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'estimated tau_{frc}'})
 
-plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'tau_{frc}'})
-
-
-plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'tau_{frc}'})
+% plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/TauJD')}, joint_names, {'tau_{Jd}'})
 
 % plot_ts_subplots(timeseriesMap('/FOB_controller/desired_trajectory/Data'), joint_names);
 % plot_ts_subplots(timeseriesMap('/franka_state_controller/franka_states/Q'), joint_names);

@@ -41,7 +41,7 @@ namespace phri_fob
         Eigen::Matrix<double, 7, 1> KD;
 
         // Trajectory params
-        double trajectory_freq = 8;
+        double trajectory_freq = 2;
         double trajectory_scale = 1 / (2.0 * M_PI);
 
         // MOdel reference
@@ -57,7 +57,7 @@ namespace phri_fob
     private:
         // publisher nodes
         ros::Publisher desiredTrajPub;
-        ros::Publisher torqueWOGravity;
+        ros::Publisher tauExtHatFiltered;
         ros::Publisher tauFrcHat;
 
         //  Low-pass hyperparameter

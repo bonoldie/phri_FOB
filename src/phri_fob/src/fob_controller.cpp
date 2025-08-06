@@ -24,7 +24,7 @@ namespace phri_fob
     // register publishers
     
     desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
-    torqueWOGravity = node_handle.advertise<std_msgs::Float32MultiArray>("torque_wo_gravity", 1);
+    tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
     tauFrcHat = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
 
     // sub_equilibrium_pose_ = node_handle.subscribe(
@@ -147,20 +147,17 @@ namespace phri_fob
 
   void FOB_controller::starting(const ros::Time & /*time*/)
   {
-
     // Position PD control parameters
-    // We do position tracking on joint 7,5 and 3 only
 
-    KP.setZero();
-    KP(6) = 30.0;
-    KP(4) = 30.0;
-    KP(2) = 30.0;
+    KP.setConstant(20.0);
+    // KP(6) = 10.0;
+    // KP(5) = 10.0;
+    // KP(2) = 10.0;
 
-    KD.setZero();
-    KD(6) = 2.0;
-    KD(4) = 2.0;
-    KD(2) = 2.0;
-
+    KD.setConstant(3.0);
+    // KD(6) = 1.0;
+    // KD(4) = 1.0;
+    // KD(2) = 1.0;
 
     // Here we set the estimated motors MoI
 
@@ -180,16 +177,16 @@ namespace phri_fob
 
      
     // Initial configuration
-    uto initial_state = state_handle_->getRobotState();
+    auto initial_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq_prev(initial_state.dq.data());
 
     // Previous values set to zero 
-    prev_torque_frc_estimated.setZero();
-    prev_ddq.setZero();
+    tau_frc_hat_prev.setZero();
+    ddq_prev.setZero();
 
     // MR-FOB setup
-    Q.setOnes();
+    Q.setConstant(0.0);
     f_r.setZero();
 
     // MR-FOB controller
@@ -218,7 +215,7 @@ namespace phri_fob
     uint64_t nsec_now = time.now().toNSec();
     auto time_in_sec = static_cast<double>(nsec_now) * 1e-9;
     auto ref_offset = std::sin(time_in_sec * trajectory_freq) * trajectory_scale;
-
+    
     // position reference to track at joint-space level
     // we want to track a sinusoidal trajectory centered in the initial joints configuration
     Eigen::Matrix<double, 7, 1> q_ref = q_initial.array() + ref_offset;
@@ -228,13 +225,25 @@ namespace phri_fob
     dq_ref.setZero();
     dq_ref = dq_ref.array() + trajectory_freq * std::cos(time_in_sec * trajectory_freq) * trajectory_scale;
 
+    // We do position tracking of the sinusoid on joints 7,5 and 3 only
+    // q_ref(0) = q_initial(0);
+    // q_ref(1) = q_initial(1);
+    // q_ref(3) = q_initial(3);
+    // q_ref(5) = q_initial(5);
+
+    // dq_ref(0) = 0.0;
+    // dq_ref(1) = 0.0;
+    // dq_ref(3) = 0.0;
+    // dq_ref(5) = 0.0;
+    
+
     // get state variables and gravity vector
     franka::RobotState robot_state = state_handle_->getRobotState();
     Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_gravity(model_handle_->getGravity().data());
 
     // We know from the frankarobotics docs that the manipulator adds the friction & gravity compensation at driver level 
     // tau_sensored = tau_command + tau_friction + tau_gravity + tau_environment 
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_sensored(robot_state.tau_J.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
     
     Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.dq.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
@@ -244,28 +253,22 @@ namespace phri_fob
     Eigen::Matrix<double, 7, 1> ddq = (dq - dq_prev) / 0.001f;
     ddq = alpha * ddq + (1 - alpha) * ddq_prev;
 
-    auto tau_sensored_wo_gravity = tau_sensored - tau_gravity; 
+    Eigen::Matrix<double, 7, 1> q_error = q_ref - q;
+    Eigen::Matrix<double, 7, 1> dq_error = dq_ref - dq;
+
+    // tau_command (i.e. tau_m)
+    Eigen::Matrix<double, 7, 1> tau_m = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);
 
     // Here we compute the torque of the motors following the model reference
     // then we add it to the friction shaper term
     auto tau_m_ref = ddq.cwiseProduct(motors_inertia) + dq.cwiseProduct(f_r);
 
-    // Position PD outputs torque commands
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-
-    Eigen::Matrix<double, 7, 1> q_error = q_ref - q;
-    Eigen::Matrix<double, 7, 1> dq_error = dq_ref - dq;
-
-    // tau_command (i.e. tau_m)
-    auto tau_m = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);
-
     // Torque estimation due to friction (low-passed in the next line)
-    auto tau_frc_hat = tau_m_ref - (tau_m - tau_sensored_wo_gravity);
+    Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_m - tau_ext_hat_filtered);
     tau_frc_hat =  alpha * (tau_frc_hat) + (1 - alpha) * tau_frc_hat_prev;
 
-    // printf("\33[H\33[2J");
-    // std::cout << (tau_m - tau_frc_hat) << std::endl;
+    printf("\33[H\33[2J");
+    std::cout << q_error << std::endl;
 
     for (size_t i = 0; i < 7; ++i)
     {
@@ -276,16 +279,19 @@ namespace phri_fob
     // Publish desired trajectory
     // message is reused for each topic
     std_msgs::Float32MultiArray float32MultiArrayMsg;
-    msg.data.resize(7);
+    float32MultiArrayMsg.data.resize(7);
 
-    std::copy(q_ref.data(), q_ref.data() + 7, float32MultiArrayMsg.data.begin());
+    for (size_t i = 0; i < 7; ++i)
+    {
+      float32MultiArrayMsg.data[i] = q_ref(i);
+    }
     desiredTrajPub.publish(float32MultiArrayMsg);
 
     std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
     tauFrcHat.publish(float32MultiArrayMsg);
 
-    std::copy(tau_sensored_wo_gravity.data(), tau_sensored_wo_gravity.data() + 7, float32MultiArrayMsg.data.begin());
-    torqueWOGravity.publish(float32MultiArrayMsg);
+    std::copy(tau_ext_hat_filtered.data(), tau_ext_hat_filtered.data() + 7, float32MultiArrayMsg.data.begin());
+    tauExtHatFiltered.publish(float32MultiArrayMsg);
 
     tau_frc_hat_prev = tau_frc_hat;
     dq_prev = dq;
