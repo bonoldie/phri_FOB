@@ -1,5 +1,3 @@
-// Copyright (c) 2017 Franka Emika GmbH
-// Use of this source code is governed by the Apache-2.0 license, see LICENSE
 #pragma once
 
 #include <memory>
@@ -33,28 +31,44 @@ namespace phri_fob
                                franka_hw::FrankaStateInterface>
     {
     public:
+        // ROS node lifecycle callbacks
         bool init(hardware_interface::RobotHW *robot_hw, ros::NodeHandle &node_handle) override;
         void starting(const ros::Time &) override;
         void update(const ros::Time &, const ros::Duration &period) override;
-        
+
+        // Tracking controller params
         Eigen::Matrix<double, 7, 1> KP;
         Eigen::Matrix<double, 7, 1> KD;
 
+        // Trajectory params
+        double trajectory_freq = 8;
+        double trajectory_scale = 1 / (2.0 * M_PI);
+
+        // MOdel reference
         Eigen::Matrix<double, 7, 1> motors_inertia;
 
+        // MR-FOB feedback controller
+        Eigen::Matrix<double, 7, 1> Q;
+
+        // MR-FOB friction shaper
+        Eigen::Matrix<double, 7, 1> f_r;
+        
+
     private:
+        // publisher nodes
         ros::Publisher desiredTrajPub;
         ros::Publisher torqueWOGravity;
         ros::Publisher tauFrcHat;
 
+        //  Low-pass hyperparameter
         double alpha = 0.95;
+
+        // Initial configuration
         Eigen::Matrix<double, 7, 1> q_initial;
 
-        Eigen::Matrix<double, 7, 1> prev_torque_frc_estimated;
-
-        Eigen::Matrix<double, 7, 1> prev_joints_dq;
-        Eigen::Matrix<double, 7, 1> prev_joints_ddq;
-
+        Eigen::Matrix<double, 7, 1> tau_frc_hat_prev;
+        Eigen::Matrix<double, 7, 1> dq_prev;
+        Eigen::Matrix<double, 7, 1> ddq_prev;
 
         // Saturation
         Eigen::Matrix<double, 7, 1>
