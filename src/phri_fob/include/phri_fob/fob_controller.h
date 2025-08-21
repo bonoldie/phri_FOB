@@ -58,7 +58,7 @@ namespace phri_fob
         // publisher nodes
         ros::Publisher desiredTrajPub;
         ros::Publisher tauExtHatFiltered;
-        ros::Publisher tauFrcHat;
+        ros::Publisher tauFrcRef;
 
         //  Low-pass hyperparameter
         double alpha = 0.95;

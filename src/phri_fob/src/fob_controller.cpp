@@ -25,7 +25,7 @@ namespace phri_fob
     
     desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
     tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
-    tauFrcHat = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
+    traFrcRef = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
 
     // sub_equilibrium_pose_ = node_handle.subscribe(
     //     "equilibrium_pose", 20, &FOB_controller::equilibriumPoseCallback, this,
@@ -267,8 +267,8 @@ namespace phri_fob
     Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_m - tau_ext_hat_filtered);
     tau_frc_hat =  alpha * (tau_frc_hat) + (1 - alpha) * tau_frc_hat_prev;
 
-    printf("\33[H\33[2J");
-    std::cout << q_error << std::endl;
+    // printf("\33[H\33[2J");
+    // std::cout << q_error << std::endl;
 
     for (size_t i = 0; i < 7; ++i)
     {
@@ -288,7 +288,7 @@ namespace phri_fob
     desiredTrajPub.publish(float32MultiArrayMsg);
 
     std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
-    tauFrcHat.publish(float32MultiArrayMsg);
+    traFrcRef.publish(float32MultiArrayMsg);
 
     std::copy(tau_ext_hat_filtered.data(), tau_ext_hat_filtered.data() + 7, float32MultiArrayMsg.data.begin());
     tauExtHatFiltered.publish(float32MultiArrayMsg);
