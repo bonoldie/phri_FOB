@@ -145,17 +145,17 @@ namespace phri_fob
     return true;
   }
 
-  void FOB_controller::starting(const ros::Time & /*time*/)
+  void FOB_controller::starting(const ros::Time &time)
   {
     // Position PD control parameters
 
-    KP.setConstant(20.0);
-    // KP(6) = 10.0;
+    KP.setConstant(40.0);
+    // KP(6) = 20.0;
     // KP(5) = 10.0;
     // KP(2) = 10.0;
 
-    KD.setConstant(3.0);
-    // KD(6) = 1.0;
+    KD.setConstant(20.0);
+    // KD(6) = 3.0;
     // KD(4) = 1.0;
     // KD(2) = 1.0;
 
@@ -178,15 +178,26 @@ namespace phri_fob
      
     // Initial configuration
     auto initial_state = state_handle_->getRobotState();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq_prev(initial_state.dq.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial_(initial_state.q.data());
+    q_initial = q_initial_;
+
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq_prev_(initial_state.dq.data());
+    dq_prev = dq_prev_;
 
     // Previous values set to zero 
     tau_frc_hat_prev.setZero();
     ddq_prev.setZero();
 
     // MR-FOB setup
-    Q.setConstant(0.0);
+    Q.setConstant(0);
+    // Q(6) = 3;
+    // Q(5) = 2;
+    // Q(4) = 1;
+    // Q(3) = 0.5;
+    // Q(2) = 0.5;
+    // Q(1) = 0.5;
+    // Q(0) = 0.5;
+
     f_r.setZero();
 
     // MR-FOB controller
@@ -205,6 +216,7 @@ namespace phri_fob
     //
     // // set nullspace equilibrium configuration to initial q
     // q_d_nullspace_ = q_initial;
+    nsec_init = time.now().toNSec();
   }
 
   void FOB_controller::update(const ros::Time &time,
@@ -213,11 +225,12 @@ namespace phri_fob
 
     // Joints trajectory setup
     uint64_t nsec_now = time.now().toNSec();
-    auto time_in_sec = static_cast<double>(nsec_now) * 1e-9;
-    auto ref_offset = std::sin(time_in_sec * trajectory_freq) * trajectory_scale;
-    
+    auto time_in_sec = static_cast<double>(nsec_now - nsec_init) * 1e-9;
+    double ref_offset = std::sin(time_in_sec * trajectory_freq) * trajectory_scale;
+
     // position reference to track at joint-space level
     // we want to track a sinusoidal trajectory centered in the initial joints configuration
+    
     Eigen::Matrix<double, 7, 1> q_ref = q_initial.array() + ref_offset;
     
     // velocity reference to track at joint-space level
@@ -245,7 +258,7 @@ namespace phri_fob
     // tau_sensored = tau_command + tau_friction + tau_gravity + tau_environment 
     Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
     
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.dq.data());
+    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
     Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
 
     // Euler approx. for acceleration calculation
@@ -267,8 +280,8 @@ namespace phri_fob
     Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_m - tau_ext_hat_filtered);
     tau_frc_hat =  alpha * (tau_frc_hat) + (1 - alpha) * tau_frc_hat_prev;
 
-    // printf("\33[H\33[2J");
-    // std::cout << q_error << std::endl;
+    printf("\33[H\33[2J");
+    std::cout << q << std::endl;
 
     for (size_t i = 0; i < 7; ++i)
     {

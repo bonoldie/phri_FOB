@@ -16,6 +16,10 @@
 #include <ros/time.h>
 #include <Eigen/Core>
 
+
+#include <std_msgs/Float32MultiArray.h>
+
+
 #include <franka_example_controllers/desired_mass_paramConfig.h>
 
 namespace franka_example_controllers {
@@ -29,6 +33,12 @@ class ForceExampleController : public controller_interface::MultiInterfaceContro
   void starting(const ros::Time&) override;
   void update(const ros::Time&, const ros::Duration& period) override;
 
+    // publisher nodes
+    ros::Publisher desiredTrajPub;
+    ros::Publisher tauExtHatFiltered;
+    ros::Publisher traFrcRef;
+
+
  private:
   // Saturation
   Eigen::Matrix<double, 7, 1> saturateTorqueRate(
@@ -39,6 +49,25 @@ class ForceExampleController : public controller_interface::MultiInterfaceContro
   std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
   std::vector<hardware_interface::JointHandle> joint_handles_;
 
+  // Low-pass hyperparameter
+  double alpha_ddq = 0.99;
+  double alpha_Q = 0.01;
+
+
+  // Model reference
+  Eigen::Matrix<double, 7, 1> motors_inertia;
+
+  // MR-FOB feedback controller
+  Eigen::Matrix<double, 7, 1> Q;
+
+  // MR-FOB friction shaper
+  Eigen::Matrix<double, 7, 1> f_r;
+
+  Eigen::Matrix<double, 7, 1> tau_frc_hat_prev;
+  Eigen::Matrix<double, 7, 1> dq_prev;
+  Eigen::Matrix<double, 7, 1> ddq_prev;
+  Eigen::Matrix<double, 7, 1> tau_cmd_prev;
+    
   double desired_mass_{0.0};
   double target_mass_{0.0};
   double k_p_{0.0};
