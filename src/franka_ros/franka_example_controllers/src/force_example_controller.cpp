@@ -113,21 +113,34 @@ void ForceExampleController::starting(const ros::Time& /*time*/) {
         0.0013;// 4.5e-6;               // J7 (12 Nm)
 
   Q.setConstant(0);
-  Q(0) = 1;
-  Q(1) = 1;
-  Q(2) = 1;
-  Q(3) = 1;
-  Q(4) = 1;
-  Q(5) = 1;
-  Q(6) = 1;
+  // Q(0) = 0;
+  // Q(1) = 0;
+  // Q(2) = 0;
+  // Q(3) = 0;
+  // Q(4) = 0;
+  // Q(5) = 0;
+  // Q(6) = 0;
+
   f_r.setZero();
 
   tau_frc_hat_prev.setZero();
   ddq_prev.setZero();
   tau_cmd_prev.setZero();
 
-  alpha_ddq = computeAlpha_Exp(50, 1000);
-  alpha_Q = computeAlpha_Exp(0.01, 1000);
+  alpha_ddq = computeAlpha_Exp(70, 1000);
+  alpha_Q_lower = computeAlpha_Exp(0, 1000);
+  alpha_Q_upper = computeAlpha_Exp(0, 1000);
+
+  filter_gain_ = computeAlpha_Exp(0.5, 1000);
+
+  alpha_Q(0) = alpha_Q_lower;
+  alpha_Q(1) = alpha_Q_lower;
+  alpha_Q(2) = alpha_Q_lower;
+  alpha_Q(3) = alpha_Q_lower;
+  alpha_Q(4) = alpha_Q_upper;
+  alpha_Q(5) = alpha_Q_upper;
+  alpha_Q(6) = alpha_Q_upper;
+
 }
 
 void ForceExampleController::update(const ros::Time &time, const ros::Duration& period) {
@@ -147,15 +160,20 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
 
   Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext;
   Eigen::Matrix<double, 6, 1> desired_force_torque;
-  desired_force_torque.setZero();
-  desired_force_torque(2) = (1 + std::sin(time.now().toNSec() * 1e-9)) * -4;// desired_mass_ * -9.81 ;
+  
+  if (joint_zero_torque) {
+    desired_force_torque.setZero();
+  } else {
+    desired_force_torque(2) = f_Z; //(1 + std::sin(time.now().toNSec() * 1e-9)) * -5;// desired_mass_ * -9.81 ;
+  }
   // std::cout << std::sin(time.now().toNSec() * 1e-9) << std::endl;
   tau_ext = tau_measured - gravity - tau_ext_initial_;
   tau_d = jacobian.transpose() * desired_force_torque;
+
   tau_error_ = tau_error_ + period.toSec() * (tau_d - tau_ext);
   // FF + PI control (PI gains are initially all 0)
   tau_cmd = tau_d + k_p_ * (tau_d - tau_ext) + k_i_ * tau_error_;
-  tau_cmd.setZero();
+  // tau_cmd.setZero();
   // tau_cmd = saturateTorqueRate(tau_cmd, tau_J_d);
 
   // Euler approx. for acceleration calculation
@@ -167,7 +185,7 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
 
   // Torque estimation due to friction (low-passed in the next line)
   Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_cmd_prev - tau_ext_hat_filtered);
-  tau_frc_hat =  alpha_Q * (tau_frc_hat) + (1 - alpha_Q) * tau_frc_hat_prev;
+  tau_frc_hat =  alpha_Q.cwiseProduct(tau_frc_hat) + (Eigen::Matrix<double, 7, 1>::Ones() - alpha_Q).cwiseProduct(tau_frc_hat_prev);
 
   for (size_t i = 0; i < 7; ++i) {
     joint_handles_[i].setCommand(tau_cmd(i) - (Q(i) * tau_frc_hat(i)));
@@ -189,6 +207,7 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   desired_mass_ = filter_gain_ * target_mass_ + (1 - filter_gain_) * desired_mass_;
   k_p_ = filter_gain_ * target_k_p_ + (1 - filter_gain_) * k_p_;
   k_i_ = filter_gain_ * target_k_i_ + (1 - filter_gain_) * k_i_;
+  f_Z = filter_gain_ * f_Z_ + (1 - filter_gain_) * f_Z;
 
   tau_frc_hat_prev = tau_frc_hat;
   dq_prev = dq;
@@ -203,16 +222,27 @@ void ForceExampleController::desiredMassParamCallback(
   target_k_p_ = config.k_p;
   target_k_i_ = config.k_i;
   
-  Q(0) = config.q_0;
-  Q(1) = config.q_1;
-  Q(2) = config.q_2;
-  Q(3) = config.q_3;
-  Q(4) = config.q_4;
-  Q(5) = config.q_5;
-  Q(6) = config.q_6;
+  Q(0) = config.q_lower;
+  Q(1) = config.q_lower;
+  Q(2) = config.q_lower;
+  Q(3) = config.q_lower;
+  Q(4) = config.q_upper;
+  Q(5) = config.q_upper;
+  Q(6) = config.q_upper;
 
-  alpha_Q = computeAlpha_Exp(config.f_c, 1000);
+  alpha_Q(0) = computeAlpha_Exp(config.f_c_lower, 1000);
+  alpha_Q(1) = computeAlpha_Exp(config.f_c_lower, 1000);
+  alpha_Q(2) = computeAlpha_Exp(config.f_c_lower, 1000);
+  alpha_Q(3) = computeAlpha_Exp(config.f_c_lower, 1000);
+  alpha_Q(4) = computeAlpha_Exp(config.f_c_upper, 1000);
+  alpha_Q(5) = computeAlpha_Exp(config.f_c_upper, 1000);
+  alpha_Q(6) = computeAlpha_Exp(config.f_c_upper, 1000);
+  
+  joint_zero_torque = config.joint_zero_torque;
 
+  f_Z_ = - config.f_z;
+
+  std::cout << "Q: "<< f_Z << '\n';
   std::cout << "Q: "<< Q << '\n';
   std::cout << "alpha_Q :"<< alpha_Q << '\n';
 }

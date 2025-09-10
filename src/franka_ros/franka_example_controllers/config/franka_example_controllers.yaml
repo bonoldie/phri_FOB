@@ -47,7 +47,6 @@ force_example_controller:
   - panda_joint5
   - panda_joint6
   - panda_joint7
-  contact_force_threshold: 500.0
 
 joint_impedance_example_controller:
   type: franka_example_controllers/JointImpedanceExampleController
