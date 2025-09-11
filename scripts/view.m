@@ -8,7 +8,7 @@ joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutp
 % bag = rosbagreader('bags/baseline_force_K_1_0_5.bag');
 % bag = rosbagreader('bags/PD_tracking.bag');
 
-bag = rosbagreader('bags/fob_force_K_1_0_5_Q_0_5_3.bag');
+bag = rosbagreader('bags/bag_inertia_fob.bag');
 
 % Get list of topics in the bag
 topics = bag.AvailableTopics.Properties.RowNames;
@@ -17,7 +17,7 @@ topics = bag.AvailableTopics.Properties.RowNames;
 timeseriesMap = containers.Map();
 
 
-topics_to_parse = { '/franka_state_controller/franka_states', '/force_example_controller/desired_trajectory'};% '/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory',
+topics_to_parse = { '/franka_state_controller/franka_states'};% '/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory',
 
 for i=1:size(topics_to_parse, 2)
     topic = topics_to_parse{i};
@@ -63,9 +63,30 @@ end
 
 %plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/Q'); timeseriesMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
 
-plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/OFExtHatK')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFExtHatK'})
-plot_multiple_ts_subplots({timeseriesMap('/force_example_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFDesiredK'}, true)
+% plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/OFExtHatK')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFExtHatK'})
+% plot_multiple_ts_subplots({timeseriesMap('/force_example_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFDesiredK'}, true)
 
+% plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/TauJ')})
+
+
+time = timeseriesMap('/franka_state_controller/franka_states/Dq').Time - timeseriesMap('/franka_state_controller/franka_states/Dq').Time(1);
+
+
+ddq = diff(timeseriesMap('/franka_state_controller/franka_states/Dq').Data(:, 7));
+dt = mean(diff(time));
+
+ddq = - ddq ./ dt;
+[b,a] = butter(1, 10/15);
+ddq = filter(b, a, ddq);
+tauJ = filter(b, a, timeseriesMap('/franka_state_controller/franka_states/TauJ').Data(:, 7));
+tauJ = tauJ / 0.05;
+
+
+figure()
+plot(time(1:end-1), tauJ(1:end-1));
+hold on;
+plot(time(1:end-1), ddq);
+legend('tau', 'ddq');
 %plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'tau_frc_hat'})
 
 % plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'estimated tau_{frc}'})

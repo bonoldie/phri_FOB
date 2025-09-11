@@ -82,6 +82,28 @@ bool ForceExampleController::init(hardware_interface::RobotHW* robot_hw,
     }
   }
 
+   // auto *position_joint_interface = robot_hw->get<hardware_interface::PositionJointInterface>();
+   //  if (position_joint_interface == nullptr)
+   //  {
+   //    ROS_ERROR_STREAM(
+   //        "FOB_controller: Error getting position joint interface from hardware");
+   //    return false;
+   //  }
+   //  for (size_t i = 0; i < 7; ++i)
+   //  {
+   //    try
+   //    {
+   //      position_joint_handles_.push_back(position_joint_interface->getHandle(joint_names[i]));
+   //    }
+   //    catch (const hardware_interface::HardwareInterfaceException &ex)
+   //    {
+   //      ROS_ERROR_STREAM(
+   //          "FOB_controller: Exception getting joint handles: " << ex.what());
+   //      return false;
+   //    }
+   //  }
+    
+
   dynamic_reconfigure_desired_mass_param_node_ =
       ros::NodeHandle("dynamic_reconfigure_desired_mass_param_node");
   dynamic_server_desired_mass_param_ = std::make_unique<
@@ -103,14 +125,17 @@ void ForceExampleController::starting(const ros::Time& /*time*/) {
   tau_ext_initial_ = tau_measured - gravity;
   tau_error_.setZero();
 
+  Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial_(robot_state.q.data());
+  q_initial = q_initial_;
+
   motors_inertia << 
-        3*0.0013, // 7.5e-5,               // J1 (87 Nm)
-        3*0.0013, // 7.5e-5,               // J2 (87 Nm)
-        3*0.0013, // 7.5e-5,               // J3 (87 Nm)
-        3*0.0013, // 7.5e-5,               // J4 (87 Nm)
-        0.0013,// 4.5e-6,               // J5 (12 Nm)
-        0.0013,// 4.5e-6,               // J6 (12 Nm)
-        0.0013;// 4.5e-6;               // J7 (12 Nm)
+        20*0.075,// 100*0.0013, // 7.5e-5,               // J1 (87 Nm)
+        20*0.075,// 100*0.0013, // 7.5e-5,               // J2 (87 Nm)
+        20*0.075,// 100*0.0013, // 7.5e-5,               // J3 (87 Nm)
+        20*0.075,// 100*0.0013, // 7.5e-5,               // J4 (87 Nm)
+        3*0.075,// 10*0.0013,// 4.5e-6,               // J5 (12 Nm)
+        3*0.075,// 10*0.0013,// 4.5e-6,               // J6 (12 Nm)
+        3*0.075;// 10*0.0013;// 4.5e-6;               // J7 (12 Nm)
 
   Q.setConstant(0);
   // Q(0) = 0;
@@ -123,9 +148,11 @@ void ForceExampleController::starting(const ros::Time& /*time*/) {
 
   f_r.setZero();
 
+  q_error_.setZero();
   tau_frc_hat_prev.setZero();
   ddq_prev.setZero();
   tau_cmd_prev.setZero();
+  tau_ext_hat_filtered_prev.setZero();
 
   alpha_ddq = computeAlpha_Exp(70, 1000);
   alpha_Q_lower = computeAlpha_Exp(0, 1000);
@@ -140,6 +167,8 @@ void ForceExampleController::starting(const ros::Time& /*time*/) {
   alpha_Q(4) = alpha_Q_upper;
   alpha_Q(5) = alpha_Q_upper;
   alpha_Q(6) = alpha_Q_upper;
+
+  
 
 }
 
@@ -170,6 +199,7 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   tau_ext = tau_measured - gravity - tau_ext_initial_;
   tau_d = jacobian.transpose() * desired_force_torque;
 
+  q_error_ = q_error_ + period.toSec() * (q_initial - q); 
   tau_error_ = tau_error_ + period.toSec() * (tau_d - tau_ext);
   // FF + PI control (PI gains are initially all 0)
   tau_cmd = tau_d + k_p_ * (tau_d - tau_ext) + k_i_ * tau_error_;
@@ -179,16 +209,23 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   // Euler approx. for acceleration calculation
   // period is fixed at 1ms (1kHz controller loop)
   Eigen::Matrix<double, 7, 1> ddq = (dq - dq_prev) / 0.001f;
+  // Removed because we filter with the Q filter 
   ddq = alpha_ddq * ddq + (1 - alpha_ddq) * ddq_prev;
   
   auto tau_m_ref = ddq.cwiseProduct(motors_inertia) + dq.cwiseProduct(f_r);
 
   // Torque estimation due to friction (low-passed in the next line)
-  Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_cmd_prev - tau_ext_hat_filtered);
+  Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_cmd_prev - tau_ext_hat_filtered_prev);
   tau_frc_hat =  alpha_Q.cwiseProduct(tau_frc_hat) + (Eigen::Matrix<double, 7, 1>::Ones() - alpha_Q).cwiseProduct(tau_frc_hat_prev);
 
   for (size_t i = 0; i < 7; ++i) {
-    joint_handles_[i].setCommand(tau_cmd(i) - (Q(i) * tau_frc_hat(i)));
+
+    //if(i < 6) {
+    //  joint_handles_[i].setCommand(300 * (q_initial(i) - q(i)) + 40 * q_error_(i) - 40 * dq(i));
+      // position_joint_handles_[i].setCommand(q_initial(i));
+    //} else {
+      joint_handles_[i].setCommand(tau_cmd(i) - (Q(i) * tau_frc_hat(i)));
+    // }
   }
 
   std_msgs::Float32MultiArray float32MultiArrayMsg;
@@ -213,6 +250,7 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   dq_prev = dq;
   ddq_prev = ddq;
   tau_cmd_prev = tau_cmd;
+  tau_ext_hat_filtered_prev = tau_ext_hat_filtered;
 }
 
 void ForceExampleController::desiredMassParamCallback(

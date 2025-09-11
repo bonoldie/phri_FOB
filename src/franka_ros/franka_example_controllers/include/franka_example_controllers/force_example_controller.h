@@ -27,7 +27,8 @@ namespace franka_example_controllers {
 class ForceExampleController : public controller_interface::MultiInterfaceController<
                                    franka_hw::FrankaModelInterface,
                                    hardware_interface::EffortJointInterface,
-                                   franka_hw::FrankaStateInterface> {
+                                   franka_hw::FrankaStateInterface,
+                                   hardware_interface::PositionJointInterface> {
  public:
   bool init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& node_handle) override;
   void starting(const ros::Time&) override;
@@ -48,6 +49,8 @@ class ForceExampleController : public controller_interface::MultiInterfaceContro
   std::unique_ptr<franka_hw::FrankaModelHandle> model_handle_;
   std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
   std::vector<hardware_interface::JointHandle> joint_handles_;
+  std::vector<hardware_interface::JointHandle> position_joint_handles_;
+
 
   // Low-pass hyperparameter
   double alpha_ddq = 0.99;
@@ -72,6 +75,11 @@ class ForceExampleController : public controller_interface::MultiInterfaceContro
   Eigen::Matrix<double, 7, 1> dq_prev;
   Eigen::Matrix<double, 7, 1> ddq_prev;
   Eigen::Matrix<double, 7, 1> tau_cmd_prev;
+  Eigen::Matrix<double, 7, 1> q_error_;
+
+  Eigen::Matrix<double, 7, 1> tau_ext_hat_filtered_prev;
+
+  
 
   bool joint_zero_torque{false};
     
@@ -83,9 +91,11 @@ class ForceExampleController : public controller_interface::MultiInterfaceContro
   double target_k_i_{0.0};
   double filter_gain_;
   Eigen::Matrix<double, 7, 1> tau_ext_initial_;
+  Eigen::Matrix<double, 7, 1> q_initial;
   Eigen::Matrix<double, 7, 1> tau_error_;
   static constexpr double kDeltaTauMax{1.0};
 
+  
   // Dynamic reconfigure
   std::unique_ptr<dynamic_reconfigure::Server<franka_example_controllers::desired_mass_paramConfig>>
       dynamic_server_desired_mass_param_;

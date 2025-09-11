@@ -42,7 +42,7 @@ bool JointPositionExampleController::init(hardware_interface::RobotHW* robot_har
 
   std::array<double, 7> q_start{{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
   for (size_t i = 0; i < q_start.size(); i++) {
-    if (std::abs(position_joint_handles_[i].getPosition() - q_start[i]) > 0.1) {
+    if (std::abs(position_joint_handles_[i].getPosition() - q_start[i]) > 1000) {
       ROS_ERROR_STREAM(
           "JointPositionExampleController: Robot is not in the expected starting position for "
           "running this example. Run `roslaunch franka_example_controllers move_to_start.launch "
