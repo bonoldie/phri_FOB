@@ -76,6 +76,8 @@ class ForceExampleController : public controller_interface::MultiInterfaceContro
   Eigen::Matrix<double, 7, 1> ddq_prev;
   Eigen::Matrix<double, 7, 1> tau_cmd_prev;
   Eigen::Matrix<double, 7, 1> q_error_;
+  Eigen::Matrix<double, 7, 1> tau_ext_prev;
+  
 
   Eigen::Matrix<double, 7, 1> tau_ext_hat_filtered_prev;
 

@@ -17,13 +17,32 @@
 
 #include <std_msgs/Float32MultiArray.h>
 
-#include <phri_fob/compliance_paramConfig.h>
 #include <franka_hw/franka_model_interface.h>
 #include <franka_hw/franka_state_interface.h>
+
+#include <phri_fob/FOB_paramConfig.h>
+
+
 
 namespace phri_fob
 {
 
+
+    // Utils
+
+    /**
+     * Exponential smoothing (1st order low-pass)
+     * 
+     * Given a cut-off frequency ``Fc`` and a sampling frequency ``Fs`` it returns the alpha value to plug into 
+     * `` 
+     * low_passed_val = current_val * alpha + previous_val * (1 - alpha) 
+     * ``
+     */
+    double computeAlphaExp(double Fc, double Fs) {
+        return 1.0 - std::exp(-2.0 * M_PI * Fc / Fs);
+    }
+
+    
     class FOB_controller : public controller_interface::MultiInterfaceController<
                                franka_hw::FrankaModelInterface,
                                hardware_interface::EffortJointInterface,
@@ -36,79 +55,120 @@ namespace phri_fob
         void starting(const ros::Time &) override;
         void update(const ros::Time &, const ros::Duration &period) override;
 
+        // By designs the controller runs at 1k
+        double controller_freq = 1000;
+
         // Tracking controller params
-        Eigen::Matrix<double, 7, 1> KP;
-        Eigen::Matrix<double, 7, 1> KD;
+        Eigen::Matrix<double, 7, 1> tracking_Kp;
+        Eigen::Matrix<double, 7, 1> tracking_Kd;
+        Eigen::Matrix<double, 7, 1> tracking_Ki;
 
-        // Trajectory params
-        double trajectory_freq = 3;
-        double trajectory_scale = 1 / (2.0 * M_PI);
+        /**
+         * Trajectory frequency in Hz
+         */
+        double traj_freq = 0;
+        
+        /**
+         * Trajectory amplitude
+         */
+        double traj_amp = 0;
 
-        // MOdel reference
+        // Force controller params
+        Eigen::Matrix<double, 7, 1> force_Kp;
+
+        double Fz = 0;
+        Eigen::Matrix<double, 6, 1> desired_cartesian_force_torque;
+
+        /**
+         * Force target in the -Z direction (positive is down)
+         */
+
+         
+        // Model reference
         Eigen::Matrix<double, 7, 1> motors_inertia;
 
-        // MR-FOB feedback controller
-        Eigen::Matrix<double, 7, 1> Q;
+        /** 
+         * FOB feedback controller
+         * 
+         * Alpha parameter (for the exponential smoothing filter) computed based on cutoff frequency for lower and upper motors
+         */
+        Eigen::Matrix<double, 7, 1> FOB_alpha_Q;
 
-        // MR-FOB friction shaper
-        Eigen::Matrix<double, 7, 1> f_r;
-        
+        /**
+         * FOB friction shaper
+         * 
+         * Friction shaper term for lower and upper motors
+         */
+        Eigen::Matrix<double, 7, 1> FOB_fr;
+
+
+        /**
+         * FOB activation flag
+         */
+        Eigen::Matrix<double, 7, 1> FOB_active;
 
     private:
+        // Params from the reconfigure server
+        // These raw params will be applied gradually to avoid huge commands
+
+        double _pc_kp;
+        double _pc_kd;
+        double _pc_ki;
+        double _ref_A;
+        double _ref_freq;
+        double _fc_kp;
+        double _fc_ki;
+        double _fc_fz;
+        int _mode;
+        bool _FOB_lower;
+        bool _FOB_upper;
+        double _q_lower;
+        double _q_upper;
+        double _fr_lower;
+        double _fr_upper;
+        double _motor_inertia;
+        double _lower_motors_multiplier;
+        double _upper_motors_multiplier;
+
         // publisher nodes
         ros::Publisher desiredTrajPub;
         ros::Publisher tauExtHatFiltered;
         ros::Publisher traFrcRef;
 
         //  Low-pass hyperparameter
-        double alpha = 0.95;
+        double alpha_lp = computeAlphaExp(30, controller_freq);
 
         uint64_t nsec_init = 0;
         
         // Initial configuration
         Eigen::Matrix<double, 7, 1> q_initial;
+        Eigen::Matrix<double, 7, 1> q_initial_;
 
-
+        // Previous values for later low-passing
         Eigen::Matrix<double, 7, 1> tau_frc_hat_prev;
+        Eigen::Matrix<double, 7, 1> tau_ext_prev;
+        Eigen::Matrix<double, 7, 1> tau_cmd_prev;
+        Eigen::Matrix<double, 7, 1> tau_ext_hat_filtered_prev;
         Eigen::Matrix<double, 7, 1> dq_prev;
         Eigen::Matrix<double, 7, 1> ddq_prev;
 
-        // Saturation
-        Eigen::Matrix<double, 7, 1>
-        saturateTorqueRate(
-            const Eigen::Matrix<double, 7, 1> &tau_d_calculated,
-            const Eigen::Matrix<double, 7, 1> &tau_J_d); // NOLINT (readability-identifier-naming)
+        Eigen::Matrix<double, 7, 1> tau_ext_initial_;
 
+        Eigen::Matrix<double, 7, 1> q_error_;
+        Eigen::Matrix<double, 7, 1> tau_error_;
+
+        // Robot handles
         std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
         std::unique_ptr<franka_hw::FrankaModelHandle> model_handle_;
         std::vector<hardware_interface::JointHandle> joint_handles_;
         std::vector<hardware_interface::JointHandle> position_joint_handles_;
 
-        double filter_params_{0.005};
-        double nullspace_stiffness_{20.0};
-        double nullspace_stiffness_target_{20.0};
-        const double delta_tau_max_{1.0};
-        Eigen::Matrix<double, 6, 6> cartesian_stiffness_;
-        Eigen::Matrix<double, 6, 6> cartesian_stiffness_target_;
-        Eigen::Matrix<double, 6, 6> cartesian_damping_;
-        Eigen::Matrix<double, 6, 6> cartesian_damping_target_;
-        Eigen::Matrix<double, 7, 1> q_d_nullspace_;
-        Eigen::Vector3d position_d_;
-        Eigen::Quaterniond orientation_d_;
-        std::mutex position_and_orientation_d_target_mutex_;
-        Eigen::Vector3d position_d_target_;
-        Eigen::Quaterniond orientation_d_target_;
-
         // Dynamic reconfigure
-        // std::unique_ptr<dynamic_reconfigure::Server<phri_fob::compliance_paramConfig>>
-        //     dynamic_server_compliance_param_;
-        // ros::NodeHandle dynamic_reconfigure_compliance_param_node_;
-        // void complianceParamCallback(phri_fob::compliance_paramConfig &config,
-        //                              uint32_t level);
-
-        // Equilibrium pose subscriber
-        // ros::Subscriber sub_equilibrium_pose_;
-        // void equilibriumPoseCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+        std::unique_ptr<dynamic_reconfigure::Server<phri_fob::FOB_paramConfig>> FOB_param_;
+        ros::NodeHandle FOB_param_node_;
+        void FOBParamCallback(phri_fob::FOB_paramConfig& config, uint32_t level);
     };
+
+
 
 } // namespace phri_fob

@@ -98,7 +98,7 @@ find_package(Franka 0.5.0 REQUIRED)
 
 ## Generate dynamic reconfigure parameters in the 'cfg' folder
 generate_dynamic_reconfigure_options(
-  cfg/compliance_param.cfg
+  cfg/FOB_param.cfg
 )
 
 ###################################

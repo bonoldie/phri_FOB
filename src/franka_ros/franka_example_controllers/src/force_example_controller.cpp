@@ -153,6 +153,7 @@ void ForceExampleController::starting(const ros::Time& /*time*/) {
   ddq_prev.setZero();
   tau_cmd_prev.setZero();
   tau_ext_hat_filtered_prev.setZero();
+  tau_ext_prev = tau_ext_initial_;
 
   alpha_ddq = computeAlpha_Exp(70, 1000);
   alpha_Q_lower = computeAlpha_Exp(0, 1000);
@@ -201,6 +202,9 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
 
   q_error_ = q_error_ + period.toSec() * (q_initial - q); 
   tau_error_ = tau_error_ + period.toSec() * (tau_d - tau_ext);
+
+  
+
   // FF + PI control (PI gains are initially all 0)
   tau_cmd = tau_d + k_p_ * (tau_d - tau_ext) + k_i_ * tau_error_;
   // tau_cmd.setZero();
@@ -214,8 +218,11 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   
   auto tau_m_ref = ddq.cwiseProduct(motors_inertia) + dq.cwiseProduct(f_r);
 
+  // printf("\33[H\33[2J");
+  // std::cout << ddq(6) * motors_inertia(6) << std::endl;
+
   // Torque estimation due to friction (low-passed in the next line)
-  Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_cmd_prev - tau_ext_hat_filtered_prev);
+  Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_cmd_prev - tau_ext_prev); // tau_ext_hat_filtered
   tau_frc_hat =  alpha_Q.cwiseProduct(tau_frc_hat) + (Eigen::Matrix<double, 7, 1>::Ones() - alpha_Q).cwiseProduct(tau_frc_hat_prev);
 
   for (size_t i = 0; i < 7; ++i) {
@@ -229,11 +236,11 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   }
 
   std_msgs::Float32MultiArray float32MultiArrayMsg;
-  float32MultiArrayMsg.data.resize(6);
+  float32MultiArrayMsg.data.resize(7);
 
-  for (size_t i = 0; i < 6; ++i)
+  for (size_t i = 0; i < 7; ++i)
   {
-    float32MultiArrayMsg.data[i] = desired_force_torque(i);
+    float32MultiArrayMsg.data[i] = tau_m_ref(i);
   }
   desiredTrajPub.publish(float32MultiArrayMsg);
 
@@ -241,7 +248,7 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   traFrcRef.publish(float32MultiArrayMsg);
 
   // Update signals changed online through dynamic reconfigure
-  desired_mass_ = filter_gain_ * target_mass_ + (1 - filter_gain_) * desired_mass_;
+  // desired_mass_ = filter_gain_ * target_mass_ + (1 - filter_gain_) * desired_mass_;
   k_p_ = filter_gain_ * target_k_p_ + (1 - filter_gain_) * k_p_;
   k_i_ = filter_gain_ * target_k_i_ + (1 - filter_gain_) * k_i_;
   f_Z = filter_gain_ * f_Z_ + (1 - filter_gain_) * f_Z;
@@ -250,15 +257,16 @@ void ForceExampleController::update(const ros::Time &time, const ros::Duration& 
   dq_prev = dq;
   ddq_prev = ddq;
   tau_cmd_prev = tau_cmd;
+  tau_ext_prev = tau_ext;
   tau_ext_hat_filtered_prev = tau_ext_hat_filtered;
 }
 
 void ForceExampleController::desiredMassParamCallback(
     franka_example_controllers::desired_mass_paramConfig& config,
     uint32_t /*level*/) {
-  target_mass_ = config.desired_mass;
+  // target_mass_ = config.desired_mass;
   target_k_p_ = config.k_p;
-  target_k_i_ = config.k_i;
+  // target_k_i_ = config.k_i;
   
   Q(0) = config.q_lower;
   Q(1) = config.q_lower;
@@ -275,6 +283,23 @@ void ForceExampleController::desiredMassParamCallback(
   alpha_Q(4) = computeAlpha_Exp(config.f_c_upper, 1000);
   alpha_Q(5) = computeAlpha_Exp(config.f_c_upper, 1000);
   alpha_Q(6) = computeAlpha_Exp(config.f_c_upper, 1000);
+
+  motors_inertia(0) = config.motor_inertia * config.lower_motors_multiplier;
+  motors_inertia(1) = config.motor_inertia * config.lower_motors_multiplier;
+  motors_inertia(2) = config.motor_inertia * config.lower_motors_multiplier;
+  motors_inertia(3) = config.motor_inertia * config.lower_motors_multiplier;
+  motors_inertia(4) = config.motor_inertia * config.upper_motors_multiplier;
+  motors_inertia(5) = config.motor_inertia * config.upper_motors_multiplier;
+  motors_inertia(6) = config.motor_inertia * config.upper_motors_multiplier;
+
+  f_r(0) = config.f_r_lower;
+  f_r(1) = config.f_r_lower;
+  f_r(2) = config.f_r_lower;
+  f_r(3) = config.f_r_lower;
+  f_r(4) = config.f_r_upper;
+  f_r(5) = config.f_r_upper;
+  f_r(6) = config.f_r_upper;
+  
   
   joint_zero_torque = config.joint_zero_torque;
 

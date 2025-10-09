@@ -15,414 +15,288 @@
 namespace phri_fob
 {
 
-  bool FOB_controller::init(hardware_interface::RobotHW *robot_hw,
-                            ros::NodeHandle &node_handle)
-  {
-    // std::vector<double> cartesian_stiffness_vector;
-    // std::vector<double> cartesian_damping_vector;
+    bool FOB_controller::init(hardware_interface::RobotHW *robot_hw, ros::NodeHandle &node_handle)
+    {
+        // Topic setup
+        desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
+        tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
+        traFrcRef = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
 
-    // register publishers
+        std::vector<std::string> joint_names;
+        std::string arm_id;
+        ROS_WARN(
+            "FOB_controller: Make sure your robot's endeffector is in contact "
+            "with a horizontal surface before starting the controller!");
+        if (!node_handle.getParam("arm_id", arm_id))
+        {
+            ROS_ERROR("FOB_controller: Could not read parameter arm_id");
+            return false;
+        }
+        if (!node_handle.getParam("joint_names", joint_names) || joint_names.size() != 7)
+        {
+            ROS_ERROR(
+                "FOB_controller: Invalid or no joint_names parameters provided, aborting "
+                "controller init!");
+            return false;
+        }
+
+        auto *model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
+        if (model_interface == nullptr)
+        {
+            ROS_ERROR_STREAM("FOB_controller: Error getting model interface from hardware");
+            return false;
+        }
+        try
+        {
+            model_handle_ = std::make_unique<franka_hw::FrankaModelHandle>(
+                model_interface->getHandle(arm_id + "_model"));
+        }
+        catch (hardware_interface::HardwareInterfaceException &ex)
+        {
+            ROS_ERROR_STREAM(
+                "FOB_controller: Exception getting model handle from interface: " << ex.what());
+            return false;
+        }
+
+        auto *state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
+        if (state_interface == nullptr)
+        {
+            ROS_ERROR_STREAM("FOB_controller: Error getting state interface from hardware");
+            return false;
+        }
+        try
+        {
+            state_handle_ = std::make_unique<franka_hw::FrankaStateHandle>(
+                state_interface->getHandle(arm_id + "_robot"));
+        }
+        catch (hardware_interface::HardwareInterfaceException &ex)
+        {
+            ROS_ERROR_STREAM(
+                "FOB_controller: Exception getting state handle from interface: " << ex.what());
+            return false;
+        }
+
+        auto *effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
+        if (effort_joint_interface == nullptr)
+        {
+            ROS_ERROR_STREAM("FOB_controller: Error getting effort joint interface from hardware");
+            return false;
+        }
+        for (size_t i = 0; i < 7; ++i)
+        {
+            try
+            {
+                joint_handles_.push_back(effort_joint_interface->getHandle(joint_names[i]));
+            }
+            catch (const hardware_interface::HardwareInterfaceException &ex)
+            {
+                ROS_ERROR_STREAM("FOB_controller: Exception getting joint handles: " << ex.what());
+                return false;
+            }
+        }
+
+        // Param server setup
+        FOB_param_node_ = ros::NodeHandle("dynamic_reconfigure_FOB_param_node");
+        FOB_param_ = std::make_unique<dynamic_reconfigure::Server<phri_fob::FOB_paramConfig>>(FOB_param_node_);
+        FOB_param_->setCallback(boost::bind(&FOB_controller::FOBParamCallback, this, _1, _2));
+
+        return true;
+    }
+
+    void FOB_controller::starting(const ros::Time & /*time*/)
+    {
+        
+        franka::RobotState robot_state = state_handle_->getRobotState();
+        std::array<double, 7> gravity_array = model_handle_->getGravity();
+
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_measured(robot_state.tau_J.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial_(robot_state.q.data());
+
+        // Bias correction for the current external torque
+        tau_ext_initial_ = tau_measured - gravity;
+
+        // Bias correction for the current external position
+        q_initial = q_initial_;
+
+        // Motor model
+        motors_inertia << 
+            20 * 0.075, // 7.5e-5,  // J1 (87 Nm)
+            20 * 0.075, // 7.5e-5,  // J2 (87 Nm)
+            20 * 0.075, // 7.5e-5,  // J3 (87 Nm)
+            20 * 0.075, // 7.5e-5,  // J4 (87 Nm)
+            3 * 0.075,  // 4.5e-6,  // J5 (12 Nm)
+            3 * 0.075,  // 4.5e-6,  // J6 (12 Nm)
+            3 * 0.075;  // 4.5e-6;  // J7 (12 Nm)
+
+        FOB_fr.setZero();
+        tau_error_.setZero();
+        desired_cartesian_force_torque.setZero();
+
+        q_error_.setZero();
+        tau_frc_hat_prev.setZero();
+        ddq_prev.setZero();
+        tau_cmd_prev.setZero();
+        tau_ext_hat_filtered_prev.setZero();
+        tau_ext_prev = tau_ext_initial_;
+
+        FOB_active.setConstant(0);
+        FOB_alpha_Q.setConstant(computeAlphaExp(0, 1000));
+        // alpha_ddq = computeAlphaExp(70, 1000);
+    }
+
+    void FOB_controller::update(const ros::Time &time, const ros::Duration &period)
+    {
+        franka::RobotState robot_state = state_handle_->getRobotState();
+        std::array<double, 42> jacobian_array = model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+        std::array<double, 7> gravity_array = model_handle_->getGravity();
+
+        // Getting whole robot state 
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
+        Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
+        
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_measured(robot_state.tau_J.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(robot_state.tau_J_d.data());
+
+        Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext;
+
+        // Low passed desired wrench (to avoid huge commands)
+        desired_cartesian_force_torque(2) = -Fz * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
+        // ... moving to joint space
+        tau_d = jacobian.transpose() * desired_cartesian_force_torque;
+
+        // External torque of each joint
+        tau_ext = tau_measured - gravity - tau_ext_initial_;
+
+        // Compute errors for controllers
+        // q_error_ = q_error_ + period.toSec() * (q_initial - q);
+        tau_error_ = tau_error_ + period.toSec() * (tau_d - tau_ext);
+
+        switch (_mode)
+        {
+        case 0:
+            // FORCE_CONTROL
+            // FF + PI control (PI gains are initially all 0)
+            tau_cmd = tau_d + _fc_kp * (tau_d - tau_ext) + _fc_ki * tau_error_;
+            break;
+        case 1:
+            // TRACKING CONTROLLER
+            // TODO: implement this
+        default:
+            tau_cmd.setConstant(0.0);
+            break;
+        }
     
-    desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
-    tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
-    traFrcRef = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
+        // Euler approx. for acceleration calculation
+        // period is fixed at 1ms (1kHz controller loop)
+        Eigen::Matrix<double, 7, 1> ddq = (dq - dq_prev) / 0.001f;
+        // Removed because we filter with the Q filter
+        ddq = alpha_lp * ddq + (1 - alpha_lp) * ddq_prev;
 
-    // sub_equilibrium_pose_ = node_handle.subscribe(
-    //     "equilibrium_pose", 20, &FOB_controller::equilibriumPoseCallback, this,
-    //     ros::TransportHints().reliable().tcpNoDelay());
+        // Model-based computed motor torque 
+        auto tau_m_model = ddq.cwiseProduct(motors_inertia) + dq.cwiseProduct(FOB_fr);
 
-    std::string arm_id;
-    if (!node_handle.getParam("arm_id", arm_id))
-    {
-      ROS_ERROR_STREAM("FOB_controller: Could not read parameter arm_id");
-      return false;
-    }
-    std::vector<std::string> joint_names;
-    if (!node_handle.getParam("joint_names", joint_names) || joint_names.size() != 7)
-    {
-      ROS_ERROR(
-          "FOB_controller: Invalid or no joint_names parameters provided, "
-          "aborting controller init!");
-      return false;
-    }
+        // Torque estimation due to friction
+        Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_model - (tau_cmd_prev - tau_ext_prev);
+        // ... low-passed
+        tau_frc_hat = FOB_alpha_Q.cwiseProduct(tau_frc_hat) + (Eigen::Matrix<double, 7, 1>::Ones() - FOB_alpha_Q).cwiseProduct(tau_frc_hat_prev);
 
-    auto *model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
-    if (model_interface == nullptr)
-    {
-      ROS_ERROR_STREAM(
-          "FOB_controller: Error getting model interface from hardware");
-      return false;
-    }
-    try
-    {
-      model_handle_ = std::make_unique<franka_hw::FrankaModelHandle>(
-          model_interface->getHandle(arm_id + "_model"));
-    }
-    catch (hardware_interface::HardwareInterfaceException &ex)
-    {
-      ROS_ERROR_STREAM(
-          "FOB_controller: Exception getting model handle from interface: "
-          << ex.what());
-      return false;
-    }
+        // Apply command to the robot torque joint handles
+        for (size_t i = 0; i < 7; ++i)
+        {         
+            joint_handles_[i].setCommand(tau_cmd(i) - (FOB_active(i) * tau_frc_hat(i)));
+        }
 
-    auto *state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
-    if (state_interface == nullptr)
-    {
-      ROS_ERROR_STREAM(
-          "FOB_controller: Error getting state interface from hardware");
-      return false;
-    }
-    try
-    {
-      state_handle_ = std::make_unique<franka_hw::FrankaStateHandle>(
-          state_interface->getHandle(arm_id + "_robot"));
-    }
-    catch (hardware_interface::HardwareInterfaceException &ex)
-    {
-      ROS_ERROR_STREAM(
-          "FOB_controller: Exception getting state handle from interface: "
-          << ex.what());
-      return false;
+        // std_msgs::Float32MultiArray float32MultiArrayMsg;
+        // float32MultiArrayMsg.data.resize(7);
+
+        // for (size_t i = 0; i < 7; ++i)
+        // {
+        //     float32MultiArrayMsg.data[i] = tau_m_ref(i);
+        // }
+        // desiredTrajPub.publish(float32MultiArrayMsg);
+        // std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
+        // traFrcRef.publish(float32MultiArrayMsg);
+
+        // Update signals changed online through dynamic reconfigure
+        // desired_mass_ = filter_gain_ * target_mass_ + (1 - filter_gain_) * desired_mass_;
+        // k_p_ = filter_gain_ * target_k_p_ + (1 - filter_gain_) * k_p_;
+        // k_i_ = filter_gain_ * target_k_i_ + (1 - filter_gain_) * k_i_;
+        // f_Z = filter_gain_ * f_Z_ + (1 - filter_gain_) * f_Z;
+
+        tau_frc_hat_prev = tau_frc_hat;
+        dq_prev = dq;
+        ddq_prev = ddq;
+        tau_cmd_prev = tau_cmd;
+        tau_ext_prev = tau_ext;
+        tau_ext_hat_filtered_prev = tau_ext_hat_filtered;
     }
 
-    auto *effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
-    if (effort_joint_interface == nullptr)
+    void FOB_controller::FOBParamCallback(phri_fob::FOB_paramConfig &config, uint32_t /*level*/)
     {
-      ROS_ERROR_STREAM(
-          "FOB_controller: Error getting effort joint interface from hardware");
-      return false;
+        // Saving all the reconfigure server params
+        _pc_kp = config.pc_kp;
+        _pc_kd = config.pc_kd;
+        _pc_ki = config.pc_ki;
+        _ref_A = config.ref_A;
+        _ref_freq = config.ref_freq;
+        _fc_kp = config.fc_kp;
+        _fc_ki = config.fc_ki;
+        _fc_fz = config.fc_fz;
+        _mode = config.mode;
+        _FOB_lower = config.FOB_lower;
+        _FOB_upper = config.FOB_upper;
+        _q_lower = config.q_lower;
+        _q_upper = config.q_upper;
+        _fr_lower = config.fr_lower;
+        _fr_upper = config.fr_upper;
+        _motor_inertia = config.motor_inertia;
+        _lower_motors_multiplier = config.lower_motors_multiplier;
+        _upper_motors_multiplier = config.upper_motors_multiplier;
+
+        // Applying all the parameters to the current setup
+
+        FOB_alpha_Q(0) = computeAlphaExp(_q_lower, 1000);
+        FOB_alpha_Q(1) = computeAlphaExp(_q_lower, 1000);
+        FOB_alpha_Q(2) = computeAlphaExp(_q_lower, 1000);
+        FOB_alpha_Q(3) = computeAlphaExp(_q_lower, 1000);
+        FOB_alpha_Q(4) = computeAlphaExp(_q_upper, 1000);
+        FOB_alpha_Q(5) = computeAlphaExp(_q_upper, 1000);
+        FOB_alpha_Q(6) = computeAlphaExp(_q_upper, 1000);
+
+        motors_inertia(0) = config.motor_inertia * _lower_motors_multiplier;
+        motors_inertia(1) = config.motor_inertia * _lower_motors_multiplier;
+        motors_inertia(2) = config.motor_inertia * _lower_motors_multiplier;
+        motors_inertia(3) = config.motor_inertia * _lower_motors_multiplier;
+        motors_inertia(4) = config.motor_inertia * _upper_motors_multiplier;
+        motors_inertia(5) = config.motor_inertia * _upper_motors_multiplier;
+        motors_inertia(6) = config.motor_inertia * _upper_motors_multiplier;
+
+        FOB_fr(0) = _fr_lower;
+        FOB_fr(1) = _fr_lower;
+        FOB_fr(2) = _fr_lower;
+        FOB_fr(3) = _fr_lower;
+        FOB_fr(4) = _fr_upper;
+        FOB_fr(5) = _fr_upper;
+        FOB_fr(6) = _fr_upper;
+
+        Fz = _fc_fz;
+
+        FOB_active(0) = _FOB_lower;
+        FOB_active(1) = _FOB_lower;
+        FOB_active(2) = _FOB_lower;
+        FOB_active(3) = _FOB_lower;
+        FOB_active(4) = _FOB_upper;
+        FOB_active(5) = _FOB_upper;
+        FOB_active(6) = _FOB_upper;
+
+        // std::cout << "Q: " << f_Z << '\n';
+        // std::cout << "Q: " << Q << '\n';
+        // std::cout << "alpha_Q :" << alpha_Q << '\n';
     }
-    for (size_t i = 0; i < 7; ++i)
-    {
-      try
-      {
-        joint_handles_.push_back(effort_joint_interface->getHandle(joint_names[i]));
-      }
-      catch (const hardware_interface::HardwareInterfaceException &ex)
-      {
-        ROS_ERROR_STREAM(
-            "FOB_controller: Exception getting joint handles: " << ex.what());
-        return false;
-      }
-    }
-
-    auto *position_joint_interface = robot_hw->get<hardware_interface::PositionJointInterface>();
-    if (position_joint_interface == nullptr)
-    {
-      ROS_ERROR_STREAM(
-          "FOB_controller: Error getting position joint interface from hardware");
-      return false;
-    }
-    for (size_t i = 0; i < 7; ++i)
-    {
-      try
-      {
-        position_joint_handles_.push_back(position_joint_interface->getHandle(joint_names[i]));
-      }
-      catch (const hardware_interface::HardwareInterfaceException &ex)
-      {
-        ROS_ERROR_STREAM(
-            "FOB_controller: Exception getting joint handles: " << ex.what());
-        return false;
-      }
-    }
-
-    // Dynamic config server
-    // dynamic_reconfigure_compliance_param_node_ = ros::NodeHandle(node_handle.getNamespace() + "/dynamic_reconfigure_compliance_param_node");
-    // dynamic_server_compliance_param_ = std::make_unique<dynamic_reconfigure::Server<phri_fob::compliance_paramConfig>>(dynamic_reconfigure_compliance_param_node_);
-    // dynamic_server_compliance_param_->setCallback(boost::bind(&FOB_controller::complianceParamCallback, this, _1, _2));
-
-    // Initialization of class variables
-    position_d_.setZero();
-    orientation_d_.coeffs() << 0.0, 0.0, 0.0, 1.0;
-    position_d_target_.setZero();
-    orientation_d_target_.coeffs() << 0.0, 0.0, 0.0, 1.0;
-
-    cartesian_stiffness_.setZero();
-    cartesian_damping_.setZero();
-
-    return true;
-  }
-
-  void FOB_controller::starting(const ros::Time &time)
-  {
-    // Position PD control parameters
-
-    KP.setConstant(40.0);
-    // KP(6) = 20.0;
-    // KP(5) = 10.0;
-    // KP(2) = 10.0;
-
-    KD.setConstant(20.0);
-    // KD(6) = 3.0;
-    // KD(4) = 1.0;
-    // KD(2) = 1.0;
-
-    // Here we set the estimated motors MoI
-
-    // 3–6 × 10⁻⁶ kg·m² for the smallest motors (joint 5,6,7)
-    // 5–10 × 10⁻⁵ kg·m² for the largest motors (joint 1,2,3,4)
-    motors_inertia << 
-        7.5e-5,               // J1 (87 Nm)
-        7.5e-5,               // J2 (87 Nm)
-        7.5e-5,               // J3 (87 Nm)
-        7.5e-5,               // J4 (87 Nm)
-        4.5e-6,               // J5 (12 Nm)
-        4.5e-6,               // J6 (12 Nm)
-        4.5e-6;               // J7 (12 Nm)
-
-    
-    // motors_inertia =  motors_inertia.array();
-
-     
-    // Initial configuration
-    auto initial_state = state_handle_->getRobotState();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial_(initial_state.q.data());
-    q_initial = q_initial_;
-
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq_prev_(initial_state.dq.data());
-    dq_prev = dq_prev_;
-
-    // Previous values set to zero 
-    tau_frc_hat_prev.setZero();
-    ddq_prev.setZero();
-
-    // MR-FOB setup
-    Q.setConstant(0);
-    // Q(6) = 3;
-    // Q(5) = 2;
-    // Q(4) = 1;
-    // Q(3) = 0.5;
-    // Q(2) = 0.5;
-    // Q(1) = 0.5;
-    // Q(0) = 0.5;
-
-    f_r.setZero();
-
-    // MR-FOB controller
-    // get jacobian
-    // std::array<double, 42> jacobian_array =
-    //     model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
-    // // convert to eigen
-    // Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial(initial_state.q.data());
-    // Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(initial_state.O_T_EE.data()));
-    //
-    // // set equilibrium point to current state
-    // position_d_ = initial_transform.translation();
-    // orientation_d_ = Eigen::Quaterniond(initial_transform.linear());
-    // position_d_target_ = initial_transform.translation();
-    // orientation_d_target_ = Eigen::Quaterniond(initial_transform.linear());
-    //
-    // // set nullspace equilibrium configuration to initial q
-    // q_d_nullspace_ = q_initial;
-    nsec_init = time.now().toNSec();
-  }
-
-  void FOB_controller::update(const ros::Time &time,
-                              const ros::Duration & /*period*/)
-  {
-
-    // Joints trajectory setup
-    uint64_t nsec_now = time.now().toNSec();
-    auto time_in_sec = static_cast<double>(nsec_now - nsec_init) * 1e-9;
-    double ref_offset = std::sin(time_in_sec * trajectory_freq) * trajectory_scale;
-
-    // position reference to track at joint-space level
-    // we want to track a sinusoidal trajectory centered in the initial joints configuration
-    
-    Eigen::Matrix<double, 7, 1> q_ref = q_initial.array() + ref_offset;
-    
-    // velocity reference to track at joint-space level
-    Eigen::Matrix<double, 7, 1> dq_ref;
-    dq_ref.setZero();
-    dq_ref = dq_ref.array() + trajectory_freq * std::cos(time_in_sec * trajectory_freq) * trajectory_scale;
-
-    // We do position tracking of the sinusoid on joints 7,5 and 3 only
-    // q_ref(0) = q_initial(0);
-    // q_ref(1) = q_initial(1);
-    // q_ref(3) = q_initial(3);
-    // q_ref(5) = q_initial(5);
-
-    // dq_ref(0) = 0.0;
-    // dq_ref(1) = 0.0;
-    // dq_ref(3) = 0.0;
-    // dq_ref(5) = 0.0;
-    
-
-    // get state variables and gravity vector
-    franka::RobotState robot_state = state_handle_->getRobotState();
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_gravity(model_handle_->getGravity().data());
-
-    // We know from the frankarobotics docs that the manipulator adds the friction & gravity compensation at driver level 
-    // tau_sensored = tau_command + tau_friction + tau_gravity + tau_environment 
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
-    
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
-    Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-
-    // Euler approx. for acceleration calculation
-    // period is fixed at 1ms (1kHz controller loop)
-    Eigen::Matrix<double, 7, 1> ddq = (dq - dq_prev) / 0.001f;
-    ddq = alpha * ddq + (1 - alpha) * ddq_prev;
-
-    Eigen::Matrix<double, 7, 1> q_error = q_ref - q;
-    Eigen::Matrix<double, 7, 1> dq_error = dq_ref - dq;
-
-    // tau_command (i.e. tau_m)
-    Eigen::Matrix<double, 7, 1> tau_m = KP.cwiseProduct(q_error) + KD.cwiseProduct(dq_error);
-
-    // Here we compute the torque of the motors following the model reference
-    // then we add it to the friction shaper term
-    auto tau_m_ref = ddq.cwiseProduct(motors_inertia) + dq.cwiseProduct(f_r);
-
-    // Torque estimation due to friction (low-passed in the next line)
-    Eigen::Matrix<double, 7, 1> tau_frc_hat = tau_m_ref - (tau_m - tau_ext_hat_filtered);
-    tau_frc_hat =  alpha * (tau_frc_hat) + (1 - alpha) * tau_frc_hat_prev;
-
-    printf("\33[H\33[2J");
-    std::cout << q << std::endl;
-
-    for (size_t i = 0; i < 7; ++i)
-    {
-      joint_handles_[i].setCommand(tau_m(i) - (Q(i) * tau_frc_hat(i)));
-      // joint_handles_[i].setCommand(0.0);
-    }
-
-    // Publish desired trajectory
-    // message is reused for each topic
-    std_msgs::Float32MultiArray float32MultiArrayMsg;
-    float32MultiArrayMsg.data.resize(7);
-
-    for (size_t i = 0; i < 7; ++i)
-    {
-      float32MultiArrayMsg.data[i] = q_ref(i);
-    }
-    desiredTrajPub.publish(float32MultiArrayMsg);
-
-    std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
-    traFrcRef.publish(float32MultiArrayMsg);
-
-    std::copy(tau_ext_hat_filtered.data(), tau_ext_hat_filtered.data() + 7, float32MultiArrayMsg.data.begin());
-    tauExtHatFiltered.publish(float32MultiArrayMsg);
-
-    tau_frc_hat_prev = tau_frc_hat;
-    dq_prev = dq;
-    ddq_prev = ddq;
-
-    // // convert to Eigen
-    // Eigen::Map<Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
-    // Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
-
-    // Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d( // NOLINT (readability-identifier-naming)
-    //     robot_state.tau_J_d.data());
-    // Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-    // Eigen::Vector3d position(transform.translation());
-    // Eigen::Quaterniond orientation(transform.linear());
-
-    // // compute error to desired pose
-    // // position error
-    // Eigen::Matrix<double, 6, 1> error;
-    // error.head(3) << position - position_d_;
-
-    // // orientation error
-    // if (orientation_d_.coeffs().dot(orientation.coeffs()) < 0.0)
-    // {
-    //   orientation.coeffs() << -orientation.coeffs();
-    // }
-    // // "difference" quaternion
-    // Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d_);
-    // error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
-    // // Transform to base frame
-    // error.tail(3) << -transform.linear() * error.tail(3);
-
-    // // compute control
-    // // allocate variables
-    // Eigen::VectorXd tau_task(7), tau_nullspace(7), tau_d(7);
-
-    // // pseudoinverse for nullspace handling
-    // // kinematic pseuoinverse
-    // Eigen::MatrixXd jacobian_transpose_pinv;
-    // pseudoInverse(jacobian.transpose(), jacobian_transpose_pinv);
-
-    // // Cartesian PD control with damping ratio = 1
-    // tau_task << jacobian.transpose() *
-    //                 (-cartesian_stiffness_ * error - cartesian_damping_ * (jacobian * dq));
-    // // nullspace PD control with damping ratio = 1
-    // tau_nullspace << (Eigen::MatrixXd::Identity(7, 7) -
-    //                   jacobian.transpose() * jacobian_transpose_pinv) *
-    //                      (nullspace_stiffness_ * (q_d_nullspace_ - q) -
-    //                       (2.0 * sqrt(nullspace_stiffness_)) * dq);
-    // // Desired torque
-    // tau_d << tau_task + tau_nullspace + coriolis;
-    // // Saturate torque rate to avoid discontinuities
-    // tau_d << saturateTorqueRate(tau_d, tau_J_d);
-    // for (size_t i = 0; i < 7; ++i)
-    // {
-    //   joint_handles_[i].setCommand(tau_d(i));
-    // }
-
-    // // update parameters changed online either through dynamic reconfigure or through the interactive
-    // // target by filtering
-    // cartesian_stiffness_ =
-    //     filter_params_ * cartesian_stiffness_target_ + (1.0 - filter_params_) * cartesian_stiffness_;
-    // cartesian_damping_ =
-    //     filter_params_ * cartesian_damping_target_ + (1.0 - filter_params_) * cartesian_damping_;
-    // nullspace_stiffness_ =
-    //     filter_params_ * nullspace_stiffness_target_ + (1.0 - filter_params_) * nullspace_stiffness_;
-    // std::lock_guard<std::mutex> position_d_target_mutex_lock(
-    //     position_and_orientation_d_target_mutex_);
-    // position_d_ = filter_params_ * position_d_target_ + (1.0 - filter_params_) * position_d_;
-    // orientation_d_ = orientation_d_.slerp(filter_params_, orientation_d_target_);
-  }
-
-  // Eigen::Matrix<double, 7, 1> FOB_controller::saturateTorqueRate(
-  //     const Eigen::Matrix<double, 7, 1> &tau_d_calculated,
-  //     const Eigen::Matrix<double, 7, 1> &tau_J_d)
-  // { // NOLINT (readability-identifier-naming)
-  //   Eigen::Matrix<double, 7, 1> tau_d_saturated{};
-  //   for (size_t i = 0; i < 7; i++)
-  //   {
-  //     double difference = tau_d_calculated[i] - tau_J_d[i];
-  //     tau_d_saturated[i] =
-  //         tau_J_d[i] + std::max(std::min(difference, delta_tau_max_), -delta_tau_max_);
-  //   }
-  //   return tau_d_saturated;
-  // }
-
-  // void FOB_controller::complianceParamCallback(
-  //     phri_fob::compliance_paramConfig &config,
-  //     uint32_t /*level*/)
-  // {
-  //   cartesian_stiffness_target_.setIdentity();
-  //   cartesian_stiffness_target_.topLeftCorner(3, 3)
-  //       << config.translational_stiffness * Eigen::Matrix3d::Identity();
-  //   cartesian_stiffness_target_.bottomRightCorner(3, 3)
-  //       << config.rotational_stiffness * Eigen::Matrix3d::Identity();
-  //   cartesian_damping_target_.setIdentity();
-  //   // Damping ratio = 1
-  //   cartesian_damping_target_.topLeftCorner(3, 3)
-  //       << 2.0 * sqrt(config.translational_stiffness) * Eigen::Matrix3d::Identity();
-  //   cartesian_damping_target_.bottomRightCorner(3, 3)
-  //       << 2.0 * sqrt(config.rotational_stiffness) * Eigen::Matrix3d::Identity();
-  //   nullspace_stiffness_target_ = config.nullspace_stiffness;
-  // }
-
-  // void FOB_controller::equilibriumPoseCallback(
-  //     const geometry_msgs::PoseStampedConstPtr &msg)
-  // {
-  //   std::lock_guard<std::mutex> position_d_target_mutex_lock(
-  //       position_and_orientation_d_target_mutex_);
-  //   position_d_target_ << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
-  //   Eigen::Quaterniond last_orientation_d_target(orientation_d_target_);
-  //   orientation_d_target_.coeffs() << msg->pose.orientation.x, msg->pose.orientation.y,
-  //       msg->pose.orientation.z, msg->pose.orientation.w;
-  //   if (last_orientation_d_target.coeffs().dot(orientation_d_target_.coeffs()) < 0.0)
-  //   {
-  //     orientation_d_target_.coeffs() << -orientation_d_target_.coeffs();
-  //   }
-  // }
-
-} // namespace phri_fob
+}
 
 PLUGINLIB_EXPORT_CLASS(phri_fob::FOB_controller, controller_interface::ControllerBase)
