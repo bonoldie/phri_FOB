@@ -8,7 +8,7 @@ joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutp
 % bag = rosbagreader('bags/baseline_force_K_1_0_5.bag');
 % bag = rosbagreader('bags/PD_tracking.bag');
 
-bag = rosbagreader('bags/bag_inertia_fob.bag');
+bag = rosbagreader('bags/vibrations.bag');
 
 % Get list of topics in the bag
 topics = bag.AvailableTopics.Properties.RowNames;
@@ -17,7 +17,7 @@ topics = bag.AvailableTopics.Properties.RowNames;
 timeseriesMap = containers.Map();
 
 
-topics_to_parse = { '/franka_state_controller/franka_states'};% '/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory',
+topics_to_parse = { '/franka_state_controller/franka_states', '/FOB_controller/tau_frc_hat'};% '/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory',
 
 for i=1:size(topics_to_parse, 2)
     topic = topics_to_parse{i};
@@ -60,6 +60,32 @@ for i=1:size(topics_to_parse, 2)
     %timeseriesMap(topic) = ts;
 end
 
+% Get all timeseries keys
+keys = timeseriesMap.keys;
+
+if isempty(keys)
+    warning('No timeseries found to resample.');
+else
+    % Reference timeseries (first one)
+    refTS = timeseriesMap(keys{1});
+    t0 = refTS.Time(1);                 % shift start time to 0
+    refTime = refTS.Time - t0;
+
+    % Uniform time vector using average sampling interval
+    dt = mean(diff(refTime));
+    uniformTime = 0:dt:refTime(end);
+
+    % Initialize new map for aligned/resampled timeseries
+    alignedMap = containers.Map();
+
+    for k = 1:length(keys)
+        ts = timeseriesMap(keys{k});
+        ts.Time = ts.Time - t0; % shift start time to 0
+        ts_resampled = resample(ts, uniformTime, 'linear');
+        alignedMap(keys{k}) = ts_resampled;
+    end
+end
+
 
 %plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/Q'); timeseriesMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
 
@@ -69,25 +95,28 @@ end
 % plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/TauJ')})
 
 
-time = timeseriesMap('/franka_state_controller/franka_states/Dq').Time - timeseriesMap('/franka_state_controller/franka_states/Dq').Time(1);
 
+plot_multiple_ts_subplots({alignedMap('/FOB_controller/tau_frc_hat/Data')}, joint_names, {'tau_frc_hat'})
 
-ddq = diff(timeseriesMap('/franka_state_controller/franka_states/Dq').Data(:, 7));
-dt = mean(diff(time));
+% time = timeseriesMap('/franka_state_controller/franka_states/Dq').Time;
+% 
+% ddq = diff(timeseriesMap('/franka_state_controller/franka_states/Dq').Data(:, 7));
+% dt = mean(diff(time));
+% 
+% ddq = - ddq ./ dt;
+% [b,a] = butter(1, 10/15);
+% ddq = filter(b, a, ddq);
+% tauJ = filter(b, a, timeseriesMap('/franka_state_controller/franka_states/TauJ').Data(:, 7));
+% tauJ = tauJ / 0.05;
+% 
+% 
+% figure()
+% plot(time(1:end-1), tauJ(1:end-1));
+% hold on;
+% plot(time(1:end-1), ddq);
+% legend('tau', 'ddq');
 
-ddq = - ddq ./ dt;
-[b,a] = butter(1, 10/15);
-ddq = filter(b, a, ddq);
-tauJ = filter(b, a, timeseriesMap('/franka_state_controller/franka_states/TauJ').Data(:, 7));
-tauJ = tauJ / 0.05;
-
-
-figure()
-plot(time(1:end-1), tauJ(1:end-1));
-hold on;
-plot(time(1:end-1), ddq);
-legend('tau', 'ddq');
-%plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'tau_frc_hat'})
+% plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'tau_frc_hat'})
 
 % plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'estimated tau_{frc}'})
 

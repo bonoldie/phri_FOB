@@ -4,9 +4,4 @@
       FOB controller
     </description>
   </class>
-  <class name="phri_fob/Identification_controller" type="phri_fob::Identification_controller" base_class_type="controller_interface::ControllerBase">
-    <description>
-      Identification controller
-    </description>
-  </class>
 </library>

@@ -15,12 +15,14 @@
 namespace phri_fob
 {
 
+    boost::recursive_mutex fob_mutex_;
+
     bool FOB_controller::init(hardware_interface::RobotHW *robot_hw, ros::NodeHandle &node_handle)
     {
         // Topic setup
-        desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
-        tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
-        traFrcRef = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_ref", 1);
+        // desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
+        // tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
+        traFrcHatNode = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_hat", 1);
 
         std::vector<std::string> joint_names;
         std::string arm_id;
@@ -97,8 +99,13 @@ namespace phri_fob
 
         // Param server setup
         FOB_param_node_ = ros::NodeHandle("dynamic_reconfigure_FOB_param_node");
-        FOB_param_ = std::make_unique<dynamic_reconfigure::Server<phri_fob::FOB_paramConfig>>(FOB_param_node_);
+        FOB_param_ = std::make_unique<dynamic_reconfigure::Server<phri_fob::FOB_paramConfig>>(fob_mutex_, FOB_param_node_);
         FOB_param_->setCallback(boost::bind(&FOB_controller::FOBParamCallback, this, _1, _2));
+
+        // This triggers the callback to update all the parameters
+        phri_fob::FOB_paramConfig cfg_default;
+        FOB_param_->getConfigDefault(cfg_default);  
+        FOB_param_->updateConfig(cfg_default);    
 
         return true;
     }
@@ -111,38 +118,40 @@ namespace phri_fob
 
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_measured(robot_state.tau_J.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
-        Eigen::Map<Eigen::Matrix<double, 7, 1>> q_initial_(robot_state.q.data());
+        Eigen::Map<Eigen::Matrix<double, 7, 1>> current_q(robot_state.q.data());
 
         // Bias correction for the current external torque
-        tau_ext_initial_ = tau_measured - gravity;
+        tau_ext_initial = tau_measured - gravity;
 
         // Bias correction for the current external position
-        q_initial = q_initial_;
+        q_initial = current_q;
 
         // Motor model
-        motors_inertia << 
-            20 * 0.075, // 7.5e-5,  // J1 (87 Nm)
-            20 * 0.075, // 7.5e-5,  // J2 (87 Nm)
-            20 * 0.075, // 7.5e-5,  // J3 (87 Nm)
-            20 * 0.075, // 7.5e-5,  // J4 (87 Nm)
-            3 * 0.075,  // 4.5e-6,  // J5 (12 Nm)
-            3 * 0.075,  // 4.5e-6,  // J6 (12 Nm)
-            3 * 0.075;  // 4.5e-6;  // J7 (12 Nm)
-
-        FOB_fr.setZero();
-        tau_error_.setZero();
+        // motors_inertia << 
+        //     20 * 0.075, // 7.5e-5,  // J1 (87 Nm)
+        //     20 * 0.075, // 7.5e-5,  // J2 (87 Nm)
+        //     20 * 0.075, // 7.5e-5,  // J3 (87 Nm)
+        //     20 * 0.075, // 7.5e-5,  // J4 (87 Nm)
+        //     3 * 0.075,  // 4.5e-6,  // J5 (12 Nm)
+        //     3 * 0.075,  // 4.5e-6,  // J6 (12 Nm)
+        //     3 * 0.075;  // 4.5e-6;  // J7 (12 Nm)
+            
         desired_cartesian_force_torque.setZero();
+// 
+        // FOB_fr.setZero();
+        // tau_error.setZero();
+// 
+        // q_error.setZero();
+        // tau_frc_hat_prev.setZero();
+        // ddq_prev.setZero();
+        // tau_cmd_prev.setZero();
+        // tau_ext_hat_filtered_prev.setZero();
+        // tau_ext_prev = tau_ext_initial;
+// 
+        // FOB_active.setConstant(0);
+        // FOB_alpha_Q.setConstant(computeAlphaExp(0, 1000));
 
-        q_error_.setZero();
-        tau_frc_hat_prev.setZero();
-        ddq_prev.setZero();
-        tau_cmd_prev.setZero();
-        tau_ext_hat_filtered_prev.setZero();
-        tau_ext_prev = tau_ext_initial_;
-
-        FOB_active.setConstant(0);
-        FOB_alpha_Q.setConstant(computeAlphaExp(0, 1000));
-        // alpha_ddq = computeAlphaExp(70, 1000);
+       
     }
 
     void FOB_controller::update(const ros::Time &time, const ros::Duration &period)
@@ -169,18 +178,18 @@ namespace phri_fob
         tau_d = jacobian.transpose() * desired_cartesian_force_torque;
 
         // External torque of each joint
-        tau_ext = tau_measured - gravity - tau_ext_initial_;
+        tau_ext = tau_measured - gravity - tau_ext_initial;
 
         // Compute errors for controllers
         // q_error_ = q_error_ + period.toSec() * (q_initial - q);
-        tau_error_ = tau_error_ + period.toSec() * (tau_d - tau_ext);
+        tau_error = tau_error + period.toSec() * (tau_d - tau_ext);
 
         switch (_mode)
         {
         case 0:
             // FORCE_CONTROL
             // FF + PI control (PI gains are initially all 0)
-            tau_cmd = tau_d + _fc_kp * (tau_d - tau_ext) + _fc_ki * tau_error_;
+            tau_cmd = tau_d + _fc_kp * (tau_d - tau_ext) + _fc_ki * tau_error;
             break;
         case 1:
             // TRACKING CONTROLLER
@@ -207,19 +216,24 @@ namespace phri_fob
         // Apply command to the robot torque joint handles
         for (size_t i = 0; i < 7; ++i)
         {         
-            joint_handles_[i].setCommand(tau_cmd(i) - (FOB_active(i) * tau_frc_hat(i)));
+            joint_handles_[i].setCommand(_reset_and_restart_btn ? 0 : tau_cmd(i) - (FOB_active(i) * tau_frc_hat(i)));
         }
 
-        // std_msgs::Float32MultiArray float32MultiArrayMsg;
-        // float32MultiArrayMsg.data.resize(7);
-
+        
+        // Publish data 
+        
+        std_msgs::Float32MultiArray float32MultiArrayMsg;
+        float32MultiArrayMsg.data.resize(7);
+        
         // for (size_t i = 0; i < 7; ++i)
         // {
-        //     float32MultiArrayMsg.data[i] = tau_m_ref(i);
+        //   float32MultiArrayMsg.data[i] = tau_frc_hat(i);
         // }
-        // desiredTrajPub.publish(float32MultiArrayMsg);
-        // std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
-        // traFrcRef.publish(float32MultiArrayMsg);
+
+        // traFrcHatNode.publish(float32MultiArrayMsg);
+        
+        std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
+        traFrcHatNode.publish(float32MultiArrayMsg);
 
         // Update signals changed online through dynamic reconfigure
         // desired_mass_ = filter_gain_ * target_mass_ + (1 - filter_gain_) * desired_mass_;
@@ -256,6 +270,7 @@ namespace phri_fob
         _motor_inertia = config.motor_inertia;
         _lower_motors_multiplier = config.lower_motors_multiplier;
         _upper_motors_multiplier = config.upper_motors_multiplier;
+        _reset_and_restart_btn = config.reset_and_restart_btn;
 
         // Applying all the parameters to the current setup
 
@@ -267,13 +282,13 @@ namespace phri_fob
         FOB_alpha_Q(5) = computeAlphaExp(_q_upper, 1000);
         FOB_alpha_Q(6) = computeAlphaExp(_q_upper, 1000);
 
-        motors_inertia(0) = config.motor_inertia * _lower_motors_multiplier;
-        motors_inertia(1) = config.motor_inertia * _lower_motors_multiplier;
-        motors_inertia(2) = config.motor_inertia * _lower_motors_multiplier;
-        motors_inertia(3) = config.motor_inertia * _lower_motors_multiplier;
-        motors_inertia(4) = config.motor_inertia * _upper_motors_multiplier;
-        motors_inertia(5) = config.motor_inertia * _upper_motors_multiplier;
-        motors_inertia(6) = config.motor_inertia * _upper_motors_multiplier;
+        motors_inertia(0) = _motor_inertia * _lower_motors_multiplier;
+        motors_inertia(1) = _motor_inertia * _lower_motors_multiplier;
+        motors_inertia(2) = _motor_inertia * _lower_motors_multiplier;
+        motors_inertia(3) = _motor_inertia * _lower_motors_multiplier;
+        motors_inertia(4) = _motor_inertia * _upper_motors_multiplier;
+        motors_inertia(5) = _motor_inertia * _upper_motors_multiplier;
+        motors_inertia(6) = _motor_inertia * _upper_motors_multiplier;
 
         FOB_fr(0) = _fr_lower;
         FOB_fr(1) = _fr_lower;
@@ -293,9 +308,21 @@ namespace phri_fob
         FOB_active(5) = _FOB_upper;
         FOB_active(6) = _FOB_upper;
 
-        // std::cout << "Q: " << f_Z << '\n';
-        // std::cout << "Q: " << Q << '\n';
-        // std::cout << "alpha_Q :" << alpha_Q << '\n';
+        if (_reset_and_restart_btn) {
+            franka::RobotState robot_state = state_handle_->getRobotState();
+            std::array<double, 7> gravity_array = model_handle_->getGravity();
+
+            Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_measured(robot_state.tau_J.data());
+            Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
+            Eigen::Map<Eigen::Matrix<double, 7, 1>> current_q(robot_state.q.data());
+
+            // Bias correction for the current external torque
+            tau_ext_initial = tau_measured - gravity;
+            tau_error.setConstant(0);
+
+            // Bias correction for the current external position
+            q_initial = current_q;
+        }
     }
 }
 

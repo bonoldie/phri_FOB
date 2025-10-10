@@ -106,11 +106,14 @@ namespace phri_fob
          * FOB activation flag
          */
         Eigen::Matrix<double, 7, 1> FOB_active;
-
+        
     private:
+        // whenever the controller started
+        uint64_t nsec_init = 0;
+
+
         // Params from the reconfigure server
         // These raw params will be applied gradually to avoid huge commands
-
         double _pc_kp;
         double _pc_kd;
         double _pc_ki;
@@ -129,16 +132,16 @@ namespace phri_fob
         double _motor_inertia;
         double _lower_motors_multiplier;
         double _upper_motors_multiplier;
+        bool _reset_and_restart_btn;
 
         // publisher nodes
-        ros::Publisher desiredTrajPub;
-        ros::Publisher tauExtHatFiltered;
-        ros::Publisher traFrcRef;
+        // ros::Publisher desiredTrajPub;
+        // ros::Publisher tauExtHatFiltered;
+        ros::Publisher traFrcHatNode;
 
         //  Low-pass hyperparameter
         double alpha_lp = computeAlphaExp(30, controller_freq);
 
-        uint64_t nsec_init = 0;
         
         // Initial configuration
         Eigen::Matrix<double, 7, 1> q_initial;
@@ -152,10 +155,10 @@ namespace phri_fob
         Eigen::Matrix<double, 7, 1> dq_prev;
         Eigen::Matrix<double, 7, 1> ddq_prev;
 
-        Eigen::Matrix<double, 7, 1> tau_ext_initial_;
+        Eigen::Matrix<double, 7, 1> tau_ext_initial;
 
-        Eigen::Matrix<double, 7, 1> q_error_;
-        Eigen::Matrix<double, 7, 1> tau_error_;
+        Eigen::Matrix<double, 7, 1> q_error;
+        Eigen::Matrix<double, 7, 1> tau_error;
 
         // Robot handles
         std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;
