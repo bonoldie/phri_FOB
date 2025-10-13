@@ -58,6 +58,10 @@ namespace phri_fob
         // By designs the controller runs at 1k
         double controller_freq = 1000;
 
+        // Tracking controller trajectory
+        Eigen::Matrix<double, 7, 1> q_d;
+        Eigen::Matrix<double, 7, 1> dq_d;
+
         // Tracking controller params
         Eigen::Matrix<double, 7, 1> tracking_Kp;
         Eigen::Matrix<double, 7, 1> tracking_Kd;
@@ -122,6 +126,9 @@ namespace phri_fob
         double _fc_kp;
         double _fc_ki;
         double _fc_fz;
+        double _fc_A;
+        double _fc_freq;
+        bool _fc_sinusoidal;
         int _mode;
         bool _FOB_lower;
         bool _FOB_upper;
@@ -135,9 +142,9 @@ namespace phri_fob
         bool _reset_and_restart_btn;
 
         // publisher nodes
-        // ros::Publisher desiredTrajPub;
+        ros::Publisher desired_trajectory_node;
         // ros::Publisher tauExtHatFiltered;
-        ros::Publisher traFrcHatNode;
+        ros::Publisher tau_frc_hat_node;
 
         //  Low-pass hyperparameter
         double alpha_lp = computeAlphaExp(30, controller_freq);
@@ -157,8 +164,8 @@ namespace phri_fob
 
         Eigen::Matrix<double, 7, 1> tau_ext_initial;
 
-        Eigen::Matrix<double, 7, 1> q_error;
-        Eigen::Matrix<double, 7, 1> tau_error;
+        Eigen::Matrix<double, 7, 1> q_error_integral;
+        Eigen::Matrix<double, 7, 1> tau_error_integral;
 
         // Robot handles
         std::unique_ptr<franka_hw::FrankaStateHandle> state_handle_;

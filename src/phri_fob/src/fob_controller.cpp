@@ -20,9 +20,9 @@ namespace phri_fob
     bool FOB_controller::init(hardware_interface::RobotHW *robot_hw, ros::NodeHandle &node_handle)
     {
         // Topic setup
-        // desiredTrajPub = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
+        desired_trajectory_node = node_handle.advertise<std_msgs::Float32MultiArray>("desired_trajectory", 1);
         // tauExtHatFiltered = node_handle.advertise<std_msgs::Float32MultiArray>("tau_ext_hat_filtered", 1);
-        traFrcHatNode = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_hat", 1);
+        tau_frc_hat_node = node_handle.advertise<std_msgs::Float32MultiArray>("tau_frc_hat", 1);
 
         std::vector<std::string> joint_names;
         std::string arm_id;
@@ -104,21 +104,23 @@ namespace phri_fob
 
         // This triggers the callback to update all the parameters
         phri_fob::FOB_paramConfig cfg_default;
-        FOB_param_->getConfigDefault(cfg_default);  
-        FOB_param_->updateConfig(cfg_default);    
+        FOB_param_->getConfigDefault(cfg_default);
+        FOB_param_->updateConfig(cfg_default);
 
         return true;
     }
 
-    void FOB_controller::starting(const ros::Time & /*time*/)
+    void FOB_controller::starting(const ros::Time &time)
     {
-        
+
         franka::RobotState robot_state = state_handle_->getRobotState();
         std::array<double, 7> gravity_array = model_handle_->getGravity();
 
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_measured(robot_state.tau_J.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> current_q(robot_state.q.data());
+
+        nsec_init = time.now().toNSec();
 
         // Bias correction for the current external torque
         tau_ext_initial = tau_measured - gravity;
@@ -127,7 +129,7 @@ namespace phri_fob
         q_initial = current_q;
 
         // Motor model
-        // motors_inertia << 
+        // motors_inertia <<
         //     20 * 0.075, // 7.5e-5,  // J1 (87 Nm)
         //     20 * 0.075, // 7.5e-5,  // J2 (87 Nm)
         //     20 * 0.075, // 7.5e-5,  // J3 (87 Nm)
@@ -135,23 +137,21 @@ namespace phri_fob
         //     3 * 0.075,  // 4.5e-6,  // J5 (12 Nm)
         //     3 * 0.075,  // 4.5e-6,  // J6 (12 Nm)
         //     3 * 0.075;  // 4.5e-6;  // J7 (12 Nm)
-            
+
         desired_cartesian_force_torque.setZero();
-// 
+        //
         // FOB_fr.setZero();
         // tau_error.setZero();
-// 
+        //
         // q_error.setZero();
         // tau_frc_hat_prev.setZero();
         // ddq_prev.setZero();
         // tau_cmd_prev.setZero();
         // tau_ext_hat_filtered_prev.setZero();
         // tau_ext_prev = tau_ext_initial;
-// 
+        //
         // FOB_active.setConstant(0);
         // FOB_alpha_Q.setConstant(computeAlphaExp(0, 1000));
-
-       
     }
 
     void FOB_controller::update(const ros::Time &time, const ros::Duration &period)
@@ -160,52 +160,66 @@ namespace phri_fob
         std::array<double, 42> jacobian_array = model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
         std::array<double, 7> gravity_array = model_handle_->getGravity();
 
-        // Getting whole robot state 
+        // Getting whole robot state
         Eigen::Map<Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
         Eigen::Map<Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-        
+
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_measured(robot_state.tau_J.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(robot_state.tau_J_d.data());
 
         Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext;
 
-        // Low passed desired wrench (to avoid huge commands)
-        desired_cartesian_force_torque(2) = -Fz * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
+        // Compute trajectory
+        q_d = q_initial + Eigen::VectorXd::Ones(7) * _ref_A * std::sin((time.now().toNSec() - nsec_init) * 1e-9 * _ref_freq * 2 * M_PI);
+        dq_d = Eigen::VectorXd::Ones(7) * _ref_A * 2 * _ref_freq * M_PI * std::cos((time.now().toNSec() - nsec_init) * 1e-9 * _ref_freq * 2 * M_PI);
+
+        if (_fc_sinusoidal)
+        {
+            // These option compute a force trajectory that is periodic and [0, -Fz]
+            desired_cartesian_force_torque(2) = (std::sin((time.now().toNSec() - nsec_init) * 1e-9 * _fc_freq * 2 * M_PI) - 1) * 0.5 * Fz * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
+        }
+        else
+        {
+            // Low passed desired wrench (to avoid huge commands)
+            desired_cartesian_force_torque(2) = -Fz * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
+        }
+
         // ... moving to joint space
         tau_d = jacobian.transpose() * desired_cartesian_force_torque;
 
         // External torque of each joint
-        tau_ext = tau_measured - gravity - tau_ext_initial;
+        tau_ext = tau_ext_hat_filtered; //tau_measured - gravity - tau_ext_initial;
 
         // Compute errors for controllers
-        // q_error_ = q_error_ + period.toSec() * (q_initial - q);
-        tau_error = tau_error + period.toSec() * (tau_d - tau_ext);
+        q_error_integral = q_error_integral + period.toSec() * (q_d - q);
+        tau_error_integral = tau_error_integral + period.toSec() * (tau_d - tau_ext);
 
         switch (_mode)
         {
         case 0:
             // FORCE_CONTROL
             // FF + PI control (PI gains are initially all 0)
-            tau_cmd = tau_d + _fc_kp * (tau_d - tau_ext) + _fc_ki * tau_error;
+            tau_cmd = tau_d + _fc_kp * (tau_d - tau_ext) + _fc_ki * tau_error_integral;
             break;
         case 1:
             // TRACKING CONTROLLER
-            // TODO: implement this
+            tau_cmd = _pc_kp * (q_d - q) + _pc_kd * (dq_d - dq) + _pc_ki * q_error_integral;
+            break;
         default:
             tau_cmd.setConstant(0.0);
             break;
         }
-    
+
         // Euler approx. for acceleration calculation
         // period is fixed at 1ms (1kHz controller loop)
         Eigen::Matrix<double, 7, 1> ddq = (dq - dq_prev) / 0.001f;
         // Removed because we filter with the Q filter
         ddq = alpha_lp * ddq + (1 - alpha_lp) * ddq_prev;
 
-        // Model-based computed motor torque 
+        // Model-based computed motor torque
         auto tau_m_model = ddq.cwiseProduct(motors_inertia) + dq.cwiseProduct(FOB_fr);
 
         // Torque estimation due to friction
@@ -215,25 +229,37 @@ namespace phri_fob
 
         // Apply command to the robot torque joint handles
         for (size_t i = 0; i < 7; ++i)
-        {         
+        {
             joint_handles_[i].setCommand(_reset_and_restart_btn ? 0 : tau_cmd(i) - (FOB_active(i) * tau_frc_hat(i)));
         }
 
-        
-        // Publish data 
-        
+        // Publish data
+
         std_msgs::Float32MultiArray float32MultiArrayMsg;
         float32MultiArrayMsg.data.resize(7);
-        
+
         // for (size_t i = 0; i < 7; ++i)
         // {
         //   float32MultiArrayMsg.data[i] = tau_frc_hat(i);
         // }
 
-        // traFrcHatNode.publish(float32MultiArrayMsg);
-        
+        // tau_frc_hat_node.publish(float32MultiArrayMsg);
+
         std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
-        traFrcHatNode.publish(float32MultiArrayMsg);
+        tau_frc_hat_node.publish(float32MultiArrayMsg);
+
+        switch (_mode)
+        {
+        case 0:
+            std::copy(tau_d.data(), tau_d.data() + 7, float32MultiArrayMsg.data.begin());
+            break;
+        case 1:
+            std::copy(q_d.data(), q_d.data() + 7, float32MultiArrayMsg.data.begin());
+            break;
+        default:
+            break;
+        }
+        desired_trajectory_node.publish(float32MultiArrayMsg);
 
         // Update signals changed online through dynamic reconfigure
         // desired_mass_ = filter_gain_ * target_mass_ + (1 - filter_gain_) * desired_mass_;
@@ -260,6 +286,8 @@ namespace phri_fob
         _fc_kp = config.fc_kp;
         _fc_ki = config.fc_ki;
         _fc_fz = config.fc_fz;
+        _fc_freq = config.fc_freq;
+        _fc_sinusoidal = config.fc_sinusoidal;
         _mode = config.mode;
         _FOB_lower = config.FOB_lower;
         _FOB_upper = config.FOB_upper;
@@ -308,7 +336,8 @@ namespace phri_fob
         FOB_active(5) = _FOB_upper;
         FOB_active(6) = _FOB_upper;
 
-        if (_reset_and_restart_btn) {
+        if (_reset_and_restart_btn)
+        {
             franka::RobotState robot_state = state_handle_->getRobotState();
             std::array<double, 7> gravity_array = model_handle_->getGravity();
 
@@ -318,7 +347,8 @@ namespace phri_fob
 
             // Bias correction for the current external torque
             tau_ext_initial = tau_measured - gravity;
-            tau_error.setConstant(0);
+            tau_error_integral.setConstant(0);
+            q_error_integral.setConstant(0);
 
             // Bias correction for the current external position
             q_initial = current_q;
