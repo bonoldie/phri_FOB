@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<launch>
+    <include file="$(find netft_rdt_driver)/launch/ft_nano_sensor.launch">
+        <arg name="ip_address" value="10.42.0.17" />
+        <arg name="rate" value="1000" />     
+    </include>
+</launch>

@@ -170,7 +170,7 @@ namespace phri_fob
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(robot_state.tau_J_d.data());
 
-        Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext;
+        Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext, tau_error;
 
         // Compute trajectory
         q_d = q_initial + Eigen::VectorXd::Ones(7) * _ref_A * std::sin((time.now().toNSec() - nsec_init) * 1e-9 * _ref_freq * 2 * M_PI);
@@ -179,30 +179,31 @@ namespace phri_fob
         if (_fc_sinusoidal)
         {
             // These option compute a force trajectory that is periodic and [0, -Fz]
-            desired_cartesian_force_torque(2) = (std::sin((time.now().toNSec() - nsec_init) * 1e-9 * _fc_freq * 2 * M_PI) - 1) * 0.5 * Fz * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
+            desired_cartesian_force_torque(2) = (std::sin((time.now().toNSec() - nsec_init) * 1e-9 * _fc_freq * 2 * M_PI) - 1) * 0.5 * Fz;//  * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
         }
         else
         {
             // Low passed desired wrench (to avoid huge commands)
-            desired_cartesian_force_torque(2) = -Fz * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
+            desired_cartesian_force_torque(2) = -Fz;// * alpha_lp + desired_cartesian_force_torque(2) * (alpha_lp - 1);
         }
 
         // ... moving to joint space
         tau_d = jacobian.transpose() * desired_cartesian_force_torque;
 
         // External torque of each joint
-        tau_ext = tau_ext_hat_filtered; //tau_measured - gravity - tau_ext_initial;
+        tau_ext = tau_measured - gravity - tau_ext_initial; // tau_ext_hat_filtered
+        tau_error = tau_d - tau_ext;
 
         // Compute errors for controllers
         q_error_integral = q_error_integral + period.toSec() * (q_d - q);
-        tau_error_integral = tau_error_integral + period.toSec() * (tau_d - tau_ext);
+        tau_error_integral = tau_error_integral + period.toSec() * (tau_error);
 
         switch (_mode)
         {
         case 0:
             // FORCE_CONTROL
             // FF + PI control (PI gains are initially all 0)
-            tau_cmd = tau_d + _fc_kp * (tau_d - tau_ext) + _fc_ki * tau_error_integral;
+            tau_cmd = tau_d + _fc_kp * (tau_error) + _fc_ki * tau_error_integral;
             break;
         case 1:
             // TRACKING CONTROLLER
@@ -230,7 +231,7 @@ namespace phri_fob
         // Apply command to the robot torque joint handles
         for (size_t i = 0; i < 7; ++i)
         {
-            joint_handles_[i].setCommand(_reset_and_restart_btn ? 0 : tau_cmd(i) - (FOB_active(i) * tau_frc_hat(i)));
+            joint_handles_[i].setCommand(_reset_and_restart_btn ? 0 : (tau_cmd(i) - (FOB_active(i) * tau_frc_hat(i))));
         }
 
         // Publish data
@@ -251,7 +252,9 @@ namespace phri_fob
         switch (_mode)
         {
         case 0:
-            std::copy(tau_d.data(), tau_d.data() + 7, float32MultiArrayMsg.data.begin());
+            // WARNING IM LAZY
+            // desired_cartesian_force_torque = - desired_cartesian_force_torque;
+            std::copy(desired_cartesian_force_torque.data(), desired_cartesian_force_torque.data() + 6, float32MultiArrayMsg.data.begin());
             break;
         case 1:
             std::copy(q_d.data(), q_d.data() + 7, float32MultiArrayMsg.data.begin());

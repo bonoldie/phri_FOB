@@ -20,6 +20,7 @@
   </node> -->
   <node name="rqt_reconfigure" pkg="rqt_reconfigure" type="rqt_reconfigure" required="false" />
 
+   <node pkg="netft_rdt_driver" type="netft_node" name="netft" output="screen" args="--address 192.168.137.40 --rate 100" ns="netft"/>
   <!-- <node name="state_controller_spawner" pkg="controller_manager" type="spawner" respawn="false" output="screen" args="franka_state_controller"/>
   <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
     <param name="tf_prefix" value="$(arg ns)"/>
