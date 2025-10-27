@@ -125,6 +125,7 @@ namespace phri_fob
         double _ref_freq;
         double _fc_kp;
         double _fc_ki;
+        double _fc_kd;
         double _fc_fz;
         double _fc_A;
         double _fc_freq;
@@ -158,6 +159,8 @@ namespace phri_fob
         Eigen::Matrix<double, 7, 1> tau_frc_hat_prev;
         Eigen::Matrix<double, 7, 1> tau_ext_prev;
         Eigen::Matrix<double, 7, 1> tau_cmd_prev;
+        Eigen::Matrix<double, 7, 1> tau_error_prev;
+        Eigen::Matrix<double, 7, 1> dtau_error_prev;
         Eigen::Matrix<double, 7, 1> tau_ext_hat_filtered_prev;
         Eigen::Matrix<double, 7, 1> dq_prev;
         Eigen::Matrix<double, 7, 1> ddq_prev;

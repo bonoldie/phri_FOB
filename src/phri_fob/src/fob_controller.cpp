@@ -139,6 +139,8 @@ namespace phri_fob
         //     3 * 0.075;  // 4.5e-6;  // J7 (12 Nm)
 
         desired_cartesian_force_torque.setZero();
+        tau_error_prev.setZero();
+
         //
         // FOB_fr.setZero();
         // tau_error.setZero();
@@ -170,7 +172,7 @@ namespace phri_fob
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_ext_hat_filtered(robot_state.tau_ext_hat_filtered.data());
         Eigen::Map<Eigen::Matrix<double, 7, 1>> tau_J_d(robot_state.tau_J_d.data());
 
-        Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext, tau_error;
+        Eigen::Matrix<double, 7, 1> tau_d, tau_cmd, tau_ext, tau_error, dtau_error;
 
         // Compute trajectory
         q_d = q_initial + Eigen::VectorXd::Ones(7) * _ref_A * std::sin((time.now().toNSec() - nsec_init) * 1e-9 * _ref_freq * 2 * M_PI);
@@ -194,6 +196,9 @@ namespace phri_fob
         tau_ext = tau_measured - gravity - tau_ext_initial; // tau_ext_hat_filtered
         tau_error = tau_d - tau_ext;
 
+        dtau_error = (tau_error - tau_error_prev) /  0.001f;
+        dtau_error = alpha_lp * dtau_error + (1 - alpha_lp) * dtau_error_prev;
+
         // Compute errors for controllers
         q_error_integral = q_error_integral + period.toSec() * (q_d - q);
         tau_error_integral = tau_error_integral + period.toSec() * (tau_error);
@@ -203,7 +208,7 @@ namespace phri_fob
         case 0:
             // FORCE_CONTROL
             // FF + PI control (PI gains are initially all 0)
-            tau_cmd = tau_d + _fc_kp * (tau_error) + _fc_ki * tau_error_integral;
+            tau_cmd = tau_d + _fc_kp * (tau_error) + _fc_ki * tau_error_integral + _fc_kd * dtau_error;
             break;
         case 1:
             // TRACKING CONTROLLER
@@ -239,13 +244,6 @@ namespace phri_fob
         std_msgs::Float32MultiArray float32MultiArrayMsg;
         float32MultiArrayMsg.data.resize(7);
 
-        // for (size_t i = 0; i < 7; ++i)
-        // {
-        //   float32MultiArrayMsg.data[i] = tau_frc_hat(i);
-        // }
-
-        // tau_frc_hat_node.publish(float32MultiArrayMsg);
-
         std::copy(tau_frc_hat.data(), tau_frc_hat.data() + 7, float32MultiArrayMsg.data.begin());
         tau_frc_hat_node.publish(float32MultiArrayMsg);
 
@@ -276,6 +274,8 @@ namespace phri_fob
         tau_cmd_prev = tau_cmd;
         tau_ext_prev = tau_ext;
         tau_ext_hat_filtered_prev = tau_ext_hat_filtered;
+        tau_error_prev = tau_error;
+        dtau_error_prev = dtau_error;
     }
 
     void FOB_controller::FOBParamCallback(phri_fob::FOB_paramConfig &config, uint32_t /*level*/)
@@ -288,6 +288,7 @@ namespace phri_fob
         _ref_freq = config.ref_freq;
         _fc_kp = config.fc_kp;
         _fc_ki = config.fc_ki;
+        _fc_kd = config.fc_kd;
         _fc_fz = config.fc_fz;
         _fc_freq = config.fc_freq;
         _fc_sinusoidal = config.fc_sinusoidal;
