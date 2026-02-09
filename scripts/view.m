@@ -8,7 +8,7 @@ joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutp
 % bag = rosbagreader('bags/baseline_force_K_1_0_5.bag');
 % bag = rosbagreader('bags/PD_tracking.bag');
 
-bag = rosbagreader('bags/force_sensor.bag');
+bag = rosbagreader('bags0902/tracking1_2026-02-09-14-32-32.bag');
 
 % Get list of topics in the bag
 topics = bag.AvailableTopics.Properties.RowNames;
@@ -27,6 +27,11 @@ for i=1:size(topics_to_parse, 2)
     timeStamps = sel.MessageList.Time;
     
     msgStructs = readMessages(sel, 'DataFormat', 'struct');
+
+    if size(msgStructs, 1) < 1
+        continue
+    end
+
     msgFields = fieldnames(msgStructs{1});
 
     for j = 1:length(msgFields)
@@ -87,80 +92,11 @@ else
 end
 
 
-%plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/Q'); timeseriesMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
+plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/Q'); timeseriesMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
 
 % plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/TauJ'),  alignedMap('/FOB_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFExtHatK', 'OFExtHatK_d'})
-plot_multiple_ts_subplots({alignedMap('/netft/netft_data/Z'),  alignedMap('/FOB_controller/desired_trajectory/Data')},  joint_names, {'tauJ', 'tauJ_d'})
+% plot_multiple_ts_subplots({alignedMap('/netft/netft_data/Z'),  alignedMap('/FOB_controller/desired_trajectory/Data')},  joint_names, {'tauJ', 'tauJ_d'})
 % plot_multiple_ts_subplots({timeseriesMap('/force_example_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFDesiredK'}, true)
 
 % plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/TauJ')})
 % plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/Q'); alignedMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
-
-
-
-
-% plot_multiple_ts_subplots({alignedMap('/FOB_controller/tau_frc_hat/Data')}, joint_names, {'tau_frc_hat'})
-
-% time = timeseriesMap('/franka_state_controller/franka_states/Dq').Time;
-% 
-% ddq = diff(timeseriesMap('/franka_state_controller/franka_states/Dq').Data(:, 7));
-% dt = mean(diff(time));
-% 
-% ddq = - ddq ./ dt;
-% [b,a] = butter(1, 10/15);
-% ddq = filter(b, a, ddq);
-% tauJ = filter(b, a, timeseriesMap('/franka_state_controller/franka_states/TauJ').Data(:, 7));
-% tauJ = tauJ / 0.05;
-% 
-% 
-% figure()
-% plot(time(1:end-1), tauJ(1:end-1));
-% hold on;
-% plot(time(1:end-1), ddq);
-% legend('tau', 'ddq');
-
-% plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'tau_frc_hat'})
-
-% plot_multiple_ts_subplots({timeseriesMap('/FOB_controller/tau_frc_ref/Data')}, joint_names, {'estimated tau_{frc}'})
-
-% plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/TauJD')}, joint_names, {'tau_{Jd}'})
-
-% plot_ts_subplots(timeseriesMap('/FOB_controller/desired_trajectory/Data'), joint_names);
-% plot_ts_subplots(timeseriesMap('/franka_state_controller/franka_states/Q'), joint_names);
-
-% Iterate over each topic
-% for i = 1:length(topics)
-%     topic = topics{i};
-% 
-%     % Select messages from the topic
-%     msgs = readMessages(select(bag, 'Topic', topic), 'DataFormat','struct');
-% 
-%     % Try to extract times and data
-%     try
-%         % Get message timestamps
-%         sel = select(bag, 'Topic', topic);
-%         timeStamps = sel.MessageList.Time;
-% 
-%         % Try to convert to time series
-%         msgStructs = readMessages(sel, 'DataFormat', 'struct');
-% 
-%         % Flatten message structure
-%         msgFields = fieldnames(msgStructs{1});
-%         for j = 1:length(msgFields)
-%             fieldName = msgFields{j};
-%             try
-%                 data = cellfun(@(m) getfield(m, fieldName), msgStructs);
-%                 ts = timeseries(data, timeStamps);
-%                 key = sprintf('%s/%s', topic, fieldName);
-%                 timeseriesMap(key) = ts;
-%             catch
-%                 % Skip fields that can't be processed
-%                 continue
-%             end
-%         end
-%     catch
-%         warning('Failed to convert topic %s to timeseries.', topic);
-%         continue
-%     end
-% end
-
