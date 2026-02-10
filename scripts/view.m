@@ -1,4 +1,4 @@
-clear all;
+clear;
 % close all;
 clc;
 
@@ -8,7 +8,7 @@ joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutp
 % bag = rosbagreader('bags/baseline_force_K_1_0_5.bag');
 % bag = rosbagreader('bags/PD_tracking.bag');
 
-bag = rosbagreader('bags0902/tracking1_2026-02-09-14-32-32.bag');
+bag = rosbagreader('../bags0902/tracking1_2026-02-09-14-32-32.bag');
 
 % Get list of topics in the bag
 topics = bag.AvailableTopics.Properties.RowNames;
@@ -27,6 +27,42 @@ for i=1:size(topics_to_parse, 2)
     timeStamps = sel.MessageList.Time;
     
     msgStructs = readMessages(sel, 'DataFormat', 'struct');
+    %-------------------------------------------------------------
+    if strcmp(topic, '/dynamic_reconfigure_FOB_param_node/parameter_updates')
+
+        N = numel(msgStructs);
+        FOB_lower = nan(N,1);
+        FOB_upper = nan(N,1);
+    
+        for k = 1:N
+            if ~isfield(msgStructs{k}, 'Bools')
+                continue
+            end
+            bools = msgStructs{k}.Bools;
+            for b = 1:numel(bools)
+                switch bools(b).Name
+                    case 'FOB_lower'
+                        FOB_lower(k) = bools(b).Value;
+                    case 'FOB_upper'
+                        FOB_upper(k) = bools(b).Value;
+                end
+            end
+        end
+
+        % dynamic_reconfigure publishes only on change
+        FOB_lower = fillmissing(FOB_lower,'previous');
+        FOB_upper = fillmissing(FOB_upper,'previous');
+    
+        % Rising edges
+        FOB_lower_rise_idx = find(diff(FOB_lower) == 1) + 1;
+        FOB_upper_rise_idx = find(diff(FOB_upper) == 1) + 1;
+    
+        % Store times (shift later like others)
+        FOB_lower_times = timeStamps(FOB_lower_rise_idx);
+        FOB_upper_times = timeStamps(FOB_upper_rise_idx);
+    
+    end
+    %------------------------------------------------------------------
 
     if size(msgStructs, 1) < 1
         continue
@@ -58,11 +94,7 @@ for i=1:size(topics_to_parse, 2)
             continue
         end
     end
-    
-    %data = cellfun(@(m) , msgStructs, 'UniformOutput', false);
-    %data = reshape(cell2mat(data), 7, []);
-    %ts = timeseries(data', timeStamps);
-    %timeseriesMap(topic) = ts;
+ 
 end
 
 % Get all timeseries keys
@@ -75,6 +107,8 @@ else
     refTS = timeseriesMap(keys{1});
     t0 = refTS.Time(1);                 % shift start time to 0
     refTime = refTS.Time - t0;
+    FOB_lower_times = FOB_lower_times - t0;
+    FOB_upper_times = FOB_upper_times - t0;
 
     % Uniform time vector using average sampling interval
     dt = mean(diff(refTime));
@@ -92,7 +126,8 @@ else
 end
 
 
-plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/Q'); timeseriesMap('/FOB_controller/desired_trajectory/Data')}, joint_names, {'q'; 'q_d'})
+plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/Q'); alignedMap('/FOB_controller/desired_trajectory/Data')}, ...
+    joint_names, {'q'; 'q_d'},FOB_lower_times,FOB_upper_times)
 
 % plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/TauJ'),  alignedMap('/FOB_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFExtHatK', 'OFExtHatK_d'})
 % plot_multiple_ts_subplots({alignedMap('/netft/netft_data/Z'),  alignedMap('/FOB_controller/desired_trajectory/Data')},  joint_names, {'tauJ', 'tauJ_d'})

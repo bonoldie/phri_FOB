@@ -1,4 +1,4 @@
-function plot_multiple_ts_subplots(tsList, varNames, tsLabels, holdPlots)
+function plot_multiple_ts_subplots(tsList, varNames, tsLabels, holdPlots, FOB_lower_times, FOB_upper_times)
 % plot_multiple_ts_subplots - Plot same channels from multiple timeseries together
 %
 % Inputs:
@@ -64,6 +64,19 @@ function plot_multiple_ts_subplots(tsList, varNames, tsLabels, holdPlots)
                 'DisplayName', tsLabels{tsIdx}, ...
                 'Color', colors(tsIdx,:));
         end
+        %---------------------------------------------------------
+        if exist('FOB_lower_times','var')
+            for t = FOB_lower_times'
+                xline(t, '--r', 'FOB lower', 'Alpha', 0.6);
+            end
+        end
+        
+        if exist('FOB_upper_times','var')
+            for t = FOB_upper_times'
+                xline(t, '--b', 'FOB upper', 'Alpha', 0.6);
+            end
+        end
+        %---------------------------------------------------------
 
         ylabel(varNames{varIdx}, 'Interpreter', 'none');
         if varIdx == D
