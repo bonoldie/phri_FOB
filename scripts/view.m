@@ -8,7 +8,7 @@ joint_names = arrayfun(@(i) ['panda_joint_' num2str(i)], 0:(DoF-1), 'UniformOutp
 % bag = rosbagreader('bags/baseline_force_K_1_0_5.bag');
 % bag = rosbagreader('bags/PD_tracking.bag');
 
-bag = rosbagreader('../bags0902/tracking1_2026-02-09-14-32-32.bag');
+bag = rosbagreader('bags0902/bags_DEFINITIVAH.bag');
 
 % Get list of topics in the bag
 topics = bag.AvailableTopics.Properties.RowNames;
@@ -17,7 +17,7 @@ topics = bag.AvailableTopics.Properties.RowNames;
 timeseriesMap = containers.Map();
 
 
-topics_to_parse = { '/franka_state_controller/franka_states', '/FOB_controller/tau_frc_hat', '/FOB_controller/desired_trajectory', '/dynamic_reconfigure_FOB_param_node/parameter_updates', '/netft/netft_data'};% '/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory',
+topics_to_parse = { '/franka_state_controller/franka_states', '/FOB_controller/tau_frc_hat', '/FOB_controller/desired_trajectory', '/dynamic_reconfigure_FOB_param_node/parameter_updates', '/netft/netft_data','/franka_state_controller/F_ext'};% '/FOB_controller/tau_ext_hat_filtered', '/FOB_controller/tau_frc_ref', '/FOB_controller/desired_trajectory',
 
 for i=1:size(topics_to_parse, 2)
     topic = topics_to_parse{i};
@@ -86,7 +86,11 @@ for i=1:size(topics_to_parse, 2)
                     key = sprintf('%s/%s', topic, fieldName);
                     timeseriesMap(key) = ts;
                 catch
-                    continue
+                    try
+                        timeseriesMap = parseFextTorque(msgs, timeStamps, timeseriesMap, topic);
+                    catch
+                        continue
+                    end
                 end
             end
         catch
@@ -126,11 +130,34 @@ else
 end
 
 
-plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/Q'); alignedMap('/FOB_controller/desired_trajectory/Data')}, ...
-    joint_names, {'q'; 'q_d'},FOB_lower_times,FOB_upper_times)
+alignedMapGravity = alignedMap('/franka_state_controller/franka_states/Q');
 
-% plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/TauJ'),  alignedMap('/FOB_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFExtHatK', 'OFExtHatK_d'})
-% plot_multiple_ts_subplots({alignedMap('/netft/netft_data/Z'),  alignedMap('/FOB_controller/desired_trajectory/Data')},  joint_names, {'tauJ', 'tauJ_d'})
+for i=1:size(alignedMapGravity.Data,1)
+    gravity=get_GravityVector(alignedMapGravity.Data(i,:));
+    alignedMapGravity.Data(i,:)=gravity;
+end
+
+a=alignedMap('/franka_state_controller/franka_states/TauJ');
+
+a.Data=a.Data-alignedMapGravity.Data;
+
+tiralafuori=alignedMap('/franka_state_controller/franka_states/OFExtHatK');
+
+
+ref=timeseries(alignedMap('/FOB_controller/desired_trajectory/Data').Data(:,3),...
+    alignedMap('/franka_state_controller/franka_states/Q').Time);
+
+forceMeasured=timeseries(alignedMap('/franka_state_controller/franka_states/OFExtHatK').Data(:,3)+2,...
+     alignedMap('/franka_state_controller/franka_states/Q').Time);
+
+
+
+plot_multiple_ts_subplots({alignedMap('/franka_state_controller/franka_states/Q'); alignedMap('/FOB_controller/desired_trajectory/Data')}, ...
+    joint_names, {'q'; 'q_d'},1,FOB_lower_times,FOB_upper_times)
+%plot_multiple_ts_subplots({ref,  forceMeasured}, joint_names , {'ref','measured'},1,FOB_lower_times,FOB_upper_times);
+%plot_multiple_ts_subplots({a,  alignedMap('/franka_state_controller/franka_states/TauJD')}, joint_names , {'tau_j','tau_jD'},1,FOB_lower_times,FOB_upper_times)
+%plot_multiple_ts_subplots({alignedMap('/netft/netft_data/Z'),  alignedMap('/FOB_controller/desired_trajectory/Data')},  joint_names, ...
+    %{'tauJ', 'tauJ_d'},1,FOB_lower_times,FOB_upper_times)
 % plot_multiple_ts_subplots({timeseriesMap('/force_example_controller/desired_trajectory/Data')}, {'X'; 'Y'; 'Z'; 'phi'; 'theta'; 'psi'} , {'OFDesiredK'}, true)
 
 % plot_multiple_ts_subplots({timeseriesMap('/franka_state_controller/franka_states/TauJ')})
